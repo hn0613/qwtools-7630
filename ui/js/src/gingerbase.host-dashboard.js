@@ -189,24 +189,31 @@ gingerbase.init_dashboard = function() {
                     'time': i18n['GGBDR6007M']
                 });
 
-                if (gingerbase.trackingTasks.indexOf(tasks[i].id) >= 0) {
+                var taskKey = 'report:' + tasks[i].id;
+                if (gingerbase.taskTracker.isTracked(taskKey)) {
                     continue;
                 }
 
-                gingerbase.trackTask(tasks[i].id, function(result) {
-                    wok.topic('gingerbase/debugReportAdded').publish();
-                }, function(result) {
-                    // Error message from Async Task status
-                    if (result['message']) {
-                        var errText = result['message'];
-                    }
-                    // Error message from standard gingerbase exception
-                    else {
-                        var errText = result['responseJSON']['reason'];
-                    }
-                    result && wok.message.error(errText);
-                    wok.topic('gingerbase/debugReportAdded').publish();
-                }, null);
+                gingerbase.taskTracker.start({
+                    key: taskKey,
+                    taskId: tasks[i].id,
+                    onSuccess: function(result) {
+                        wok.topic('gingerbase/debugReportAdded').publish();
+                    },
+                    onError: function(result) {
+                        var errText;
+                        if (result['message']) {
+                            errText = result['message'];
+                        } else if (result['responseJSON']) {
+                            errText = result['responseJSON']['reason'];
+                        } else {
+                            errText = 'Report generation failed';
+                        }
+                        wok.message.error(errText);
+                        wok.topic('gingerbase/debugReportAdded').publish();
+                    },
+                    onProgress: null
+                });
             }
         }, null, true);
 
@@ -688,6 +695,8 @@ gingerbase.init_dashboard = function() {
             gingerbase.hostTimer.stop();
             delete gingerbase.hostTimer;
         }
+
+        gingerbase.taskTracker.abortAll();
 
         reportGrid && reportGrid.destroy();
         wok.topic('gingerbase/debugReportAdded').unsubscribe(listDebugReports);

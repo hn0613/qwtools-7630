@@ -357,43 +357,148 @@ gingerbase.init_update = function() {
 
     $("#update-all-packages").click(function() {
         $("#update-all-packages").prop('disabled', true);
-        $("#update-accordion").show(500);
+        $("#updates-accordion").show(500);
+        textMessage = "";
         $("#software-updates-progress-textarea").text("Processing...");
-        gingerbase.updateAllSoftware(function(result) {
-            $("#update-all-packages").prop('disabled', true);
-            reloadProgressArea(result);
-            wok.topic('gingerbase/softwareUpdated').publish({
-                result: result
-            });
-            $("#update-all-packages").prop('disabled', false);
-        }, function(error) {
-            var message = error && error['responseJSON'] && error['responseJSON']['reason'];
-            wok.message.error(message || i18n['GGBUPD6009M']);
-            $("#update-all-packages").prop('disabled', false);
-        }, reloadProgressArea);
+        gingerbase.updateAllSoftware(
+            function(result) {
+                // onSuccess — status is 'finished'
+                reloadProgressArea(result);
+                textMessage += i18n['GGBUPD6015M'];
+                $("#software-updates-progress-textarea").text(textMessage);
+                gingerbase.init_update_packages();
+                wok.topic('gingerbase/softwareUpdated').publish({result: result});
+                $("#update-all-packages").prop('disabled', false);
+            },
+            function(result) {
+                // onError — status is 'failed' or network error
+                var errMsg = (result && result['message']) ||
+                    (result && result['responseJSON'] && result['responseJSON']['reason']) ||
+                    i18n['GGBUPD6009M'];
+                textMessage += errMsg + '\n';
+                $("#software-updates-progress-textarea").text(textMessage);
+                $("#updates-accordion").show(500);
+                wok.message.error(errMsg);
+                gingerbase.init_update_packages();
+                $("#update-all-packages").prop('disabled', false);
+            },
+            function(result) {
+                // onProgress — status is 'running'
+                reloadProgressArea(result);
+            }
+        );
     });
 
     var startSoftwareUpdateProgress = function() {
         var progressArea = $('#' + progressAreaID)[0];
         $('#software-updates-progress-container').removeClass('hidden');
         $(progressArea).text('');
-        var filter = 'status=running&target_uri=' + encodeURIComponent('^/plugins/gingerbase/host/swupdate/*');
-            gingerbase.getTasksByFilter(filter, function(tasks) {
-                var result = {};
-                if (tasks.length > 0) {
-                    gingerbase.getTask(tasks[0].id, function(task){
-                        result = task;
-                    }, function(error){});
-                }
-                if (result['status'] == 'running') {
-                    reloadProgressArea(result);
-                    $(".wok-mask").fadeOut(300, function() {});
-                } else {
+
+        // Step 1: Check for running bulk update
+        var bulkFilter = 'status=running&target_uri=' +
+            encodeURIComponent('^/plugins/gingerbase/host/swupdate/*');
+
+        gingerbase.getTasksByFilter(bulkFilter, function(tasks) {
+            if (tasks.length > 0) {
+                // Found a running bulk update — show last message and resume polling
+                textMessage = tasks[0].message || '';
+                $(progressArea).text(textMessage);
+                $("#updates-accordion").show(500);
+
+                gingerbase.taskTracker.start({
+                    key: 'swupdate',
+                    taskId: tasks[0].id,
+                    onSuccess: function(result) {
+                        reloadProgressArea(result);
+                        textMessage += i18n['GGBUPD6015M'];
+                        $(progressArea).text(textMessage);
+                        gingerbase.init_update_packages();
+                        $("#update-all-packages").prop('disabled', false);
+                    },
+                    onError: function(result) {
+                        var errMsg = (result && result['message']) || i18n['GGBUPD6009M'];
+                        textMessage += errMsg + '\n';
+                        $(progressArea).text(textMessage);
+                        gingerbase.init_update_packages();
+                        $("#update-all-packages").prop('disabled', false);
+                    },
+                    onProgress: function(result) {
+                        reloadProgressArea(result);
+                    }
+                });
+
+                $(".wok-mask").fadeOut(300);
+            } else {
+                // Step 2: No bulk update — check for running individual package updates
+                var pkgFilter = 'status=running&target_uri=' +
+                    encodeURIComponent('^/plugins/gingerbase/host/packagesupdate/.*/upgrade');
+                gingerbase.getTasksByFilter(pkgFilter, function(pkgTasks) {
+                    if (pkgTasks.length > 0) {
+                        recoverIndividualUpdates(pkgTasks);
+                    } else {
+                        gingerbase.init_update_packages();
+                    }
+                }, function() {
                     gingerbase.init_update_packages();
-                }
-            }, function(error) {
-                wok.message.error(i18n['GGBUPD6011M']);
-            }, reloadProgressArea);
+                });
+            }
+        }, function(error) {
+            wok.message.error(i18n['GGBUPD6011M']);
+            gingerbase.init_update_packages();
+        });
+    };
+
+    var recoverIndividualUpdates = function(tasks) {
+        gingerbase.init_update_packages(function() {
+            $.each(tasks, function(i, task) {
+                var match = task.target_uri.match(/packagesupdate\/([^/]+)\/upgrade/);
+                if (!match) return;
+
+                var pkgName = decodeURIComponent(match[1]);
+                var escapedName = pkgName.replace(/\./g, '\\.');
+
+                // Set spinner icon on the row
+                $("#grid-basic tr[data-row-id=" + escapedName + "] td:nth-child(3)")
+                    .empty()
+                    .append('<span class="specialClass"><i class="fa fa-spinner fa-spin fa-fw"' +
+                        ' aria-hidden="true" data-toggle="tooltip" title="' +
+                        i18n['GGBUPD6012M'] + '"></i></span>');
+                $('[data-toggle="tooltip"]').tooltip();
+
+                // Disable buttons while recovery is in progress
+                $("#update-packages").prop('disabled', true);
+                $("#update-all-packages").prop('disabled', true);
+
+                gingerbase.taskTracker.start({
+                    key: 'pkgupdate:' + pkgName,
+                    taskId: task.id,
+                    onSuccess: function(result) {
+                        gingerbase.setUpdateStatusIcon([{
+                            package: pkgName,
+                            status: 'finished',
+                            dependsNotSelected: []
+                        }]);
+                        // Re-enable buttons — individual recovery doesn't track batch completion
+                        $("#update-packages").prop('disabled', false);
+                        $("#update-all-packages").prop('disabled', false);
+                    },
+                    onError: function(result) {
+                        gingerbase.setUpdateStatusIcon([{
+                            package: pkgName,
+                            status: 'failed',
+                            dependsNotSelected: []
+                        }]);
+                        var errMsg = pkgName + '   ' + ((result && result['message']) || 'Failed');
+                        gingerbase.message += errMsg + '\n';
+                        $("#software-updates-progress-textarea").text(gingerbase.message);
+                        $("#updates-accordion").show(500);
+                        $("#update-packages").prop('disabled', false);
+                        $("#update-all-packages").prop('disabled', false);
+                    },
+                    onProgress: null
+                });
+            });
+        });
     };
 
     var initPage = function() {
@@ -446,6 +551,8 @@ gingerbase.init_update = function() {
             delete gingerbase.hostTimer;
         }
 
+        gingerbase.taskTracker.abortAll();
+
         repositoriesGrid && repositoriesGrid.destroy();
         wok.topic('gingerbase/repositoryAdded')
             .unsubscribe(listRepositories);
@@ -453,17 +560,6 @@ gingerbase.init_update = function() {
             .unsubscribe(listRepositories);
         wok.topic('gingerbase/repositoryDeleted')
             .unsubscribe(listRepositories);
-
-        reportGrid && reportGrid.destroy();
-        wok.topic('gingerbase/debugReportAdded').unsubscribe(listDebugReports);
-        wok.topic('gingerbase/debugReportRenamed').unsubscribe(listDebugReports);
-    });
-
-     $('#host-root-container').on('remove', function() {
-        if (gingerbase.hostTimer) {
-            gingerbase.hostTimer.stop();
-            delete gingerbase.hostTimer;
-        }
 
         softwareUpdatesGrid && softwareUpdatesGrid.destroy();
     });
@@ -547,25 +643,35 @@ gingerbase.syncUpdatePackages = function(arrayPackages, position) {
         $("#update-all-packages").prop('disabled', true);
         if (arrayPackages.length !== position) {
             if (!arrayPackages[position].isDepend) {
-                gingerbase.updateSoftware(arrayPackages[position].package, function(result){
-                    $("#update-packages").prop('disabled', true);
-                    $("#update-all-packages").prop('disabled', true);
-                    arrayPackages[position].status = result['status'];
-                    if (result['status'] == 'failed') {
-                        $("#update-packages").prop('disabled', true);
-                        $("#update-all-packages").prop('disabled', true);
-                        $("#update-accordion").show(500);
-                        gingerbase.message += arrayPackages[position].package + '   ' + result['message'];
+                gingerbase.updateSoftware(arrayPackages[position].package,
+                    function(result) {
+                        // onSuccess — status is 'finished'
+                        arrayPackages[position].status = 'finished';
+                        gingerbase.arrayOfPackagesToKeepIcon = arrayPackages;
+                        gingerbase.setUpdateStatusIcon(arrayPackages);
+                        gingerbase.syncUpdatePackages(arrayPackages, count);
+                        $("#update-packages").prop('disabled', false);
+                        $("#update-all-packages").prop('disabled', false);
+                    },
+                    function(result) {
+                        // onError — status is 'failed'
+                        arrayPackages[position].status = 'failed';
+                        $("#updates-accordion").show(500);
+                        gingerbase.message += arrayPackages[position].package + '   ' +
+                            ((result && result['message']) || 'Update failed') + '\n';
                         $("#software-updates-progress-textarea").text(gingerbase.message);
+                        gingerbase.arrayOfPackagesToKeepIcon = arrayPackages;
+                        gingerbase.setUpdateStatusIcon(arrayPackages);
+                        gingerbase.syncUpdatePackages(arrayPackages, count);
+                        $("#update-packages").prop('disabled', false);
+                        $("#update-all-packages").prop('disabled', false);
+                    },
+                    function() {
+                        // onProgress — status is 'running'
+                        gingerbase.arrayOfPackagesToKeepIcon = arrayPackages;
+                        gingerbase.setUpdateStatusIcon(arrayPackages);
                     }
-                    gingerbase.arrayOfPackagesToKeepIcon = arrayPackages;
-                    gingerbase.setUpdateStatusIcon(arrayPackages);
-                    gingerbase.syncUpdatePackages(arrayPackages, count);
-                    $("#update-packages").prop('disabled', false);
-                    $("#update-all-packages").prop('disabled', false);
-                }, function(err){
-                    wok.message.error(err.responseJSON.reason);
-                }, gingerbase.setUpdateStatusIcon);
+                );
             } else {
                 gingerbase.arrayOfPackagesToKeepIcon = arrayPackages;
                 gingerbase.setUpdateStatusIcon(arrayPackages);
@@ -581,7 +687,7 @@ gingerbase.syncUpdatePackages = function(arrayPackages, position) {
     },1000);
 };
 
-gingerbase.init_update_packages = function(){
+gingerbase.init_update_packages = function(onComplete){
         $("#update-packages").unbind("click");
         $(".wok-mask").fadeIn(300, function() {});
         var packageList = [];
@@ -647,6 +753,10 @@ gingerbase.init_update_packages = function(){
             });
 
             $("#grid-basic thead .select-box").remove();
+
+            if ($.isFunction(onComplete)) {
+                onComplete();
+            }
         }, function(error){
             wok.message.error(error.responseJSON.reason, '#message-container-area');
         });
@@ -654,91 +764,139 @@ gingerbase.init_update_packages = function(){
         $("#update-packages").on("click", function(evt) {
             evt.preventDefault();
             evt.stopPropagation();
-            var resultList = [];
 
             $("#update-packages").prop('disabled', true);
             $("#update-all-packages").prop('disabled', true);
 
-            $.each(packagesSelected, function( indice, pack ) {
-                var resultObject = {
-                        package: pack,
-                        status: 'running',
-                        dependsNotSelected: [],
-                        isDepend: false,
-                        loopFlag: false
-                }
-
+            // Set spinner icons immediately for all selected packages
+            $.each(packagesSelected, function(indice, pack) {
                 $("#grid-basic tr[data-row-id=" + pack + "] td:nth-child(3)").empty();
-                $("#grid-basic tr[data-row-id=" + pack + "] td:nth-child(3)").append('<span class="specialClass"><i class="fa fa-spinner fa-spin fa-fw" aria-hidden="true" data-toggle="tooltip" title="'+ i18n['GGBUPD6012M'] +'"></i></span>');
+                $("#grid-basic tr[data-row-id=" + pack + "] td:nth-child(3)").append(
+                    '<span class="specialClass"><i class="fa fa-spinner fa-spin fa-fw"' +
+                    ' aria-hidden="true" data-toggle="tooltip" title="' +
+                    i18n['GGBUPD6012M'] + '"></i></span>');
+            });
+            $('[data-toggle="tooltip"]').tooltip();
 
-                gingerbase.getPackageDeps(pack, function(deplist){
-                    $.each(deplist, function(index, depend){
+            // Phase 1: Resolve dependencies for each selected package (async)
+            var resultList = [];
+            var depsResolved = 0;
+            var totalDeps = packagesSelected.length;
+
+            if (totalDeps === 0) {
+                return;
+            }
+
+            $.each(packagesSelected, function(indice, pack) {
+                var resultObject = {
+                    package: pack,
+                    status: 'running',
+                    dependsNotSelected: [],
+                    isDepend: false,
+                    loopFlag: false
+                };
+
+                gingerbase.getPackageDeps(pack, function(deplist) {
+                    $.each(deplist, function(index, depend) {
                         if (gingerbase.isDependOnPackageList(depend, packageListNames)) {
                             resultObject.dependsNotSelected.push(depend);
                         }
                     });
                     resultList.push(resultObject);
-                }, null);
+                    depsResolved++;
+                    if (depsResolved === totalDeps) {
+                        onDepsResolvedPhase2(resultList, packagesSelected, packageListNames);
+                    }
+                }, function() {
+                    // On error, still count as resolved with empty deps
+                    resultList.push(resultObject);
+                    depsResolved++;
+                    if (depsResolved === totalDeps) {
+                        onDepsResolvedPhase2(resultList, packagesSelected, packageListNames);
+                    }
+                });
             });
+        });
+};
 
-            $.each(resultList, function(index, packObj){
-                packObj.loopFlag = true;
-                gingerbase.getPackageDeps(packObj.package, function(deplist){
-                    $.each(deplist, function(index2, depend){
-                        if (gingerbase.isDependOnPackageList(depend, packagesSelected)) {
-                            $.each(resultList, function(index3, packObj2){
-                                if (packObj2.package == depend && !packObj2.loopFlag) {
-                                    packObj2.isDepend = true;
-                                }
-                            });
+var onDepsResolvedPhase2 = function(resultList, packagesSelected, packageListNames) {
+    // Phase 2: Cross-reference dependencies (async)
+    var crossResolved = 0;
+    var totalCross = resultList.length;
+
+    if (totalCross === 0) {
+        onCrossDepsResolved(resultList, packagesSelected);
+        return;
+    }
+
+    $.each(resultList, function(index, packObj) {
+        packObj.loopFlag = true;
+        gingerbase.getPackageDeps(packObj.package, function(deplist) {
+            $.each(deplist, function(index2, depend) {
+                if (gingerbase.isDependOnPackageList(depend, packagesSelected)) {
+                    $.each(resultList, function(index3, packObj2) {
+                        if (packObj2.package == depend && !packObj2.loopFlag) {
+                            packObj2.isDepend = true;
                         }
                     });
-                }, null);
-            });
-
-            var content = '';
-            var modalFlag = false;
-            $.each(resultList, function(index, value){
-                var len = value.dependsNotSelected.length;
-                if (len > 0) {
-                    modalFlag = true;
-                    content += '<b>' + value.package + ': </b>';
-                    $.each(value.dependsNotSelected, function(index2, value2){
-                        content += value2;
-                        if (index2 != len - 1) {
-                            content += ", ";
-                        }
-                    });
-                    content += '<br />';
                 }
             });
-            if (modalFlag) {
-                var settings = {
-                    title : i18n['GGBUPD6014M'],
-                    content : content,
-                    confirm : 'Yes',
-                    cancel : 'No'
-                };
-                wok.confirm(settings, function() {
-                    wok.window.close();
-                    setTimeout(function() {
-                        gingerbase.message = '';
-                        gingerbase.setUpdateStatusIcon(resultList);
-                        gingerbase.syncUpdatePackages(resultList, 0);
-                    }, 400);
+            crossResolved++;
+            if (crossResolved === totalCross) {
+                onCrossDepsResolved(resultList, packagesSelected);
+            }
+        }, function() {
+            crossResolved++;
+            if (crossResolved === totalCross) {
+                onCrossDepsResolved(resultList, packagesSelected);
+            }
+        });
+    });
+};
 
-                },function(){
-                    $.each(packagesSelected, function( indice, pack ) {
-                        $("#grid-basic tr[data-row-id=" + pack + "] td:nth-child(3)").empty();
-                    });
+var onCrossDepsResolved = function(resultList, packagesSelected) {
+    // Phase 3: Show confirmation dialog if unselected dependencies exist
+    var content = '';
+    var modalFlag = false;
+    $.each(resultList, function(index, value) {
+        var len = value.dependsNotSelected.length;
+        if (len > 0) {
+            modalFlag = true;
+            content += '<b>' + value.package + ': </b>';
+            $.each(value.dependsNotSelected, function(index2, value2) {
+                content += value2;
+                if (index2 != len - 1) {
+                    content += ", ";
+                }
+            });
+            content += '<br />';
+        }
+    });
 
-                    $("#update-packages").prop('disabled', false);
-                    $("#update-all-packages").prop('disabled', false);
-                });
-            } else if(packagesSelected.length > 0) {
+    if (modalFlag) {
+        var settings = {
+            title : i18n['GGBUPD6014M'],
+            content : content,
+            confirm : 'Yes',
+            cancel : 'No'
+        };
+        wok.confirm(settings, function() {
+            wok.window.close();
+            setTimeout(function() {
                 gingerbase.message = '';
                 gingerbase.setUpdateStatusIcon(resultList);
                 gingerbase.syncUpdatePackages(resultList, 0);
-            }
+            }, 400);
+        }, function() {
+            $.each(packagesSelected, function(indice, pack) {
+                $("#grid-basic tr[data-row-id=" + pack + "] td:nth-child(3)").empty();
+            });
+            $("#update-packages").prop('disabled', false);
+            $("#update-all-packages").prop('disabled', false);
         });
+    } else if (resultList.length > 0) {
+        gingerbase.message = '';
+        gingerbase.setUpdateStatusIcon(resultList);
+        gingerbase.syncUpdatePackages(resultList, 0);
+    }
 };

@@ -21,8 +21,6 @@ var gingerbase = {
 
     widget: {},
 
-    trackingTasks: [],
-
     /**
      *
      * Get host capabilities
@@ -106,11 +104,10 @@ var gingerbase = {
         wok.requestJSON({
             url : 'plugins/gingerbase/tasks/' + encodeURIComponent(taskId),
             type : 'GET',
-            async: false,
             contentType : 'application/json',
             dataType : 'json',
             success : suc,
-            error : err
+            error : err || function() {}
         });
     },
 
@@ -139,45 +136,26 @@ var gingerbase = {
     },
 
     trackTask : function(taskID, suc, err, progress) {
-        var onTaskResponse = function(result) {
-            var taskStatus = result['status'];
-            switch(taskStatus) {
-            case 'running':
-                progress && progress(result);
-                setTimeout(function() {
-                    gingerbase.trackTask(taskID, suc, err, progress);
-                }, 2000);
-                break;
-            case 'finished':
-                suc && suc(result);
-                break;
-            case 'failed':
-                err && err(result);
-                break;
-            default:
-                break;
-            }
-        };
-
-        gingerbase.getTask(taskID, onTaskResponse, err);
-        if(gingerbase.trackingTasks.indexOf(taskID) < 0)
-            gingerbase.trackingTasks.push(taskID);
+        var key = 'legacy:' + taskID;
+        gingerbase.taskTracker.start({
+            key: key,
+            taskId: taskID,
+            onSuccess: suc,
+            onError: err,
+            onProgress: progress
+        });
     },
 
     createReport: function(settings, suc, err, progress) {
-        var onResponse = function(data) {
-            taskID = data['id'];
-            gingerbase.trackTask(taskID, suc, err, progress);
-        };
-
-        wok.requestJSON({
-            url : 'plugins/gingerbase/debugreports',
-            type : "POST",
-            contentType : "application/json",
-            data : JSON.stringify(settings),
-            dataType : "json",
-            success : onResponse,
-            error : err
+        var reportName = settings['name'] || ('auto-' + Date.now());
+        return gingerbase.taskTracker.submit({
+            key: 'report:' + reportName,
+            url: 'plugins/gingerbase/debugreports',
+            data: settings,
+            onSuccess: suc,
+            onError: err,
+            onProgress: progress,
+            onPostError: err
         });
     },
 
@@ -241,127 +219,49 @@ var gingerbase = {
             type : 'GET',
             contentType : 'application/json',
             dataType : 'json',
-            async: false,
             success : suc,
-            error : err
+            error : err || function() {}
         });
     },
 
     softwareUpdateProgress : function(suc, err, progress) {
-        var taskID = -1;
-        var onResponse = function(data) {
-            taskID = data['id'];
-            trackTask();
-        };
-
-        var trackTask = function() {
-            gingerbase.getTask(taskID, onTaskResponse, err);
-        };
-
-        var onTaskResponse = function(result) {
-            var taskStatus = result['status'];
-            switch(taskStatus) {
-            case 'running':
-                progress && progress(result);
-                setTimeout(function() {
-                    trackTask();
-                }, 1000);
-                break;
-            case 'finished':
-            case 'failed':
-                suc(result);
-                break;
-            default:
-                break;
-            }
-        };
-
         wok.requestJSON({
             url : 'plugins/gingerbase/host/swupdateprogress',
             type : "GET",
             contentType : "application/json",
             dataType : "json",
-            success : onResponse,
+            success : function(data) {
+                gingerbase.taskTracker.start({
+                    key: 'swupdateprogress',
+                    taskId: data['id'],
+                    onSuccess: suc,
+                    onError: err,
+                    onProgress: progress
+                });
+            },
             error : err
         });
     },
 
     updateSoftware : function(pack, suc, err, progress) {
-        var taskID = -1;
-        var onResponse = function(data) {
-            taskID = data['id'];
-            trackTask();
-        };
-
-        var trackTask = function() {
-            gingerbase.getTask(taskID, onTaskResponse, err);
-        };
-
-        var onTaskResponse = function(result) {
-            var taskStatus = result['status'];
-            switch(taskStatus) {
-            case 'running':
-                progress();
-                setTimeout(function() {
-                    trackTask();
-                }, 1000);
-                break;
-            case 'finished':
-            case 'failed':
-                suc(result);
-                break;
-            default:
-                break;
-            }
-        };
-
-        wok.requestJSON({
-            url : 'plugins/gingerbase/host/packagesupdate/' + pack + '/upgrade',
-            type : "POST",
-            async: false,
-            contentType : "application/json",
-            dataType : "json",
-            success : onResponse,
-            error : err
+        gingerbase.taskTracker.submit({
+            key: 'pkgupdate:' + pack,
+            url: 'plugins/gingerbase/host/packagesupdate/' + encodeURIComponent(pack) + '/upgrade',
+            onSuccess: suc,
+            onError: err,
+            onProgress: progress,
+            onPostError: err
         });
     },
 
     updateAllSoftware : function(suc, err, progress) {
-        var taskID = -1;
-        var onResponse = function(data) {
-            taskID = data['id'];
-            trackTask();
-        };
-
-        var trackTask = function() {
-            gingerbase.getTask(taskID, onTaskResponse, err);
-        };
-
-        var onTaskResponse = function(result) {
-            var taskStatus = result['status'];
-            switch(taskStatus) {
-            case 'running':
-                progress && progress(result);
-                setTimeout(function() {
-                    trackTask();
-                }, 700);
-                break;
-            case 'finished':
-            case 'failed':
-                suc(result);
-                break;
-            default:
-                break;
-            }
-        };
-
-        wok.requestJSON({
-            url : 'plugins/gingerbase/host/swupdate',
-            type : "POST",
-            contentType : "application/json",
-            dataType : "json",
-            success : onResponse,
-            error : err
+        gingerbase.taskTracker.submit({
+            key: 'swupdate',
+            url: 'plugins/gingerbase/host/swupdate',
+            onSuccess: suc,
+            onError: err,
+            onProgress: progress,
+            onPostError: err
         });
     },
 

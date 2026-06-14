@@ -45,18 +45,23 @@ gingerbase.report_add_main = function() {
             $('#button-report-cancel').trigger('click');
         };
 
-        gingerbase.createReport(formData, function(result) {
+        submitButton.prop('disabled', true);
+
+        var submitted = gingerbase.createReport(formData, function(result) {
             onTaskAccepted();
             wok.topic('gingerbase/debugReportAdded').publish();
              $('#button-report-cancel').trigger('click');
         }, function(result) {
             // Error message from Async Task status
-            if (result['message']) {
+            if (result && result['message']) {
                 var errText = result['message'];
             }
             // Error message from standard gingerbase exception
-            else {
+            else if (result && result['responseJSON']) {
                 var errText = result['responseJSON']['reason'];
+            }
+            else {
+                var errText = 'Report generation failed';
             }
             result && wok.message.error(errText,'#alert-modal-debugreportadd-container', true);
 
@@ -66,6 +71,11 @@ gingerbase.report_add_main = function() {
             submitButton.prop('disabled', false);
             nameTextbox.select();
         }, onTaskAccepted);
+
+        if (!submitted) {
+            // Already tracking this report — re-enable button
+            submitButton.prop('disabled', false);
+        }
 
         event.preventDefault();
     };

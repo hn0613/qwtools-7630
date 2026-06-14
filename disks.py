@@ -122,7 +122,7 @@ def _is_dev_extended_partition(devType, devNodePath):
         except Exception as e:
             wok_log.error(
                 'Error dealing with dev mapper device: ' + devNodePath)
-            raise OperationFailed('GGBDISK00001E', {'err': e.message})
+            raise OperationFailed('GGBDISK00001E', {'err': str(e)})
     else:
         diskPath = devNodePath.rstrip('0123456789')
 
@@ -132,7 +132,7 @@ def _is_dev_extended_partition(devType, devNodePath):
     except NotImplementedError as e:
         wok_log.warning(
             'Error getting extended partition info for dev %s type %s: %s',
-            devNodePath, devType, e.message)
+            devNodePath, devType, str(e))
         # Treate disk with unsupported partiton table as if it does not
         # contain extended partitions.
         return False

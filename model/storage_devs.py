@@ -103,7 +103,7 @@ def get_final_list():
                 else:
                     final_list.append(final_dict)
     except Exception as e:
-        raise OperationFailed('GINSD00005E', {'err': e.message})
+        raise OperationFailed('GINSD00005E', {'err': str(e)})
 
     return final_list
 
@@ -157,7 +157,7 @@ def _get_dasd_pim():
                 enabled_chipids = _get_paths(binaryval_pam, chipid)
                 pim_dict[bus_id] = len(enabled_chipids)
         except Exception as err:
-            raise OperationFailed('GINDASD0013E', {'err': err.message})
+            raise OperationFailed('GINDASD0013E', {'err': str(err)})
     return pim_dict
 
 
@@ -289,7 +289,7 @@ def parse_lsblk_out(lsblk_out):
             return_dict[disk_attrs[0].split('=')[1][1:-1]] = disk_info
 
     except Exception as e:
-        raise OperationFailed('GINSD00004E', {'err': e.message})
+        raise OperationFailed('GINSD00004E', {'err': str(e)})
 
     return return_dict
 
@@ -351,7 +351,7 @@ def parse_ll_out(ll_out):
             else:
                 return_id_dict[disk_id] = [name]
     except Exception as e:
-        raise OperationFailed('GINSD00003E', {'err': e.message})
+        raise OperationFailed('GINSD00003E', {'err': str(e)})
 
     return return_dict, return_id_dict
 

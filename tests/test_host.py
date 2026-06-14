@@ -67,10 +67,7 @@ class HostTests(unittest.TestCase):
             keys = ['os_distro', 'os_version', 'os_codename', 'cpu_model',
                     'memory', 'cpus', 'architecture', 'host',
                     'cpu_threads']
-            try:
-                total_phymem = psutil.TOTAL_PHYMEM
-            except AttributeError:
-                total_phymem = psutil.virtual_memory().total
+            total_phymem = psutil.virtual_memory().total
             self.assertEquals(total_phymem, info['memory']['online'])
         self.assertEquals(sorted(keys), sorted(info.keys()))
 
@@ -199,7 +196,7 @@ class HostTests(unittest.TestCase):
         def failed_libvirt_import(module, *args, **kwargs):
             raise ImportError()
 
-        with patch('__builtin__.__import__', failed_libvirt_import):
+        with patch('builtins.__import__', failed_libvirt_import):
             vms = HostModel(objstore=None).get_vmlist_bystate()
             self.assertEqual(vms, [])
 
@@ -211,7 +208,7 @@ class HostTests(unittest.TestCase):
 
         mock_run_cmd.return_value = ['', '', 3]
 
-        with patch('__builtin__.__import__', successful_libvirt_import):
+        with patch('builtins.__import__', successful_libvirt_import):
             vms = HostModel(objstore=None).get_vmlist_bystate()
             self.assertEqual(vms, [])
             cmd = ['systemctl', 'is-active', 'libvirtd', '--quiet']

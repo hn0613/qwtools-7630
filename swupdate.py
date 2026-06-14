@@ -30,6 +30,7 @@ from configobj import ConfigObjError
 from psutil import pid_exists
 from psutil import process_iter
 from wok.basemodel import Singleton
+from wok.exception import InvalidOperation
 from wok.exception import NotFoundError
 from wok.exception import OperationFailed
 from wok.plugins.gingerbase import portageparser
@@ -43,34 +44,34 @@ from wok.utils import wok_log
 swupdateLock = threading.RLock()
 
 
-class SoftwareUpdate(object):
-    __metaclass__ = Singleton
-
+class SoftwareUpdate(object, metaclass=Singleton):
     """
     Class to represent and operate with OS software update.
     """
 
     def __init__(self):
-        # Get the distro of host machine and creates an object related to
-        # correct package management system
+        # Detect the host's package manager and create the corresponding
+        # update handler. Environment probing: logs what was tried.
         self._pkg_mnger = None
-        for module, cls in [('dnf', DnfUpdate), ('yum', YumUpdate),
-                            ('apt', AptUpdate), ('portage', PortageUpdate)]:
+        for module_name, cls in [('dnf', DnfUpdate), ('yum', YumUpdate),
+                                  ('apt', AptUpdate), ('portage', PortageUpdate)]:
             try:
-                __import__(module)
-                wok_log.info('Logging %s features.' % cls.__name__)
+                __import__(module_name)
+                wok_log.info('Software updates: using %s', cls.__name__)
                 self._pkg_mnger = cls()
                 break
             except ImportError:
-                continue
-        zypper_help = ['zypper', '--help']
-        (stdout, stderr, returncode) = run_command(zypper_help)
-        if returncode == 0:
-            wok_log.info('Loading ZypperUpdate features.')
-            self._pkg_mnger = ZypperUpdate()
+                wok_log.debug('Update module %s not available', module_name)
+
         if self._pkg_mnger is None:
-            raise Exception('There is no compatible package '
-                            'manager for this system.')
+            zypper_help = ['zypper', '--help']
+            (stdout, stderr, returncode) = run_command(zypper_help)
+            if returncode == 0:
+                wok_log.info('Software updates: using ZypperUpdate')
+                self._pkg_mnger = ZypperUpdate()
+
+        if self._pkg_mnger is None:
+            raise InvalidOperation('GGBPKGUPD0004E')
 
     def getUpdates(self):
         """
@@ -80,8 +81,6 @@ class SoftwareUpdate(object):
         try:
             pkgs = [pkg for pkg in self._pkg_mnger.getPackagesList()]
             return pkgs
-        except Exception:
-            raise
         finally:
             swupdateLock.release()
 
@@ -95,8 +94,6 @@ class SoftwareUpdate(object):
             if not package:
                 raise NotFoundError('GGBPKGUPD0002E', {'name': name})
             return package
-        except Exception:
-            raise
         finally:
             swupdateLock.release()
 
@@ -108,8 +105,6 @@ class SoftwareUpdate(object):
         swupdateLock.acquire()
         try:
             return self._pkg_mnger.getPackageDeps(name)
-        except Exception:
-            raise
         finally:
             swupdateLock.release()
 
@@ -120,8 +115,6 @@ class SoftwareUpdate(object):
         swupdateLock.acquire()
         try:
             return len(self.getUpdates())
-        except Exception:
-            raise
         finally:
             swupdateLock.release()
 
@@ -381,7 +374,7 @@ class AptUpdate(GenericUpdate):
             pkgs = self._apt_cache.get_changes()
             self._apt_cache.close()
         except Exception as e:
-            raise OperationFailed('GGBPKGUPD0003E', {'err': e.message})
+            raise OperationFailed('GGBPKGUPD0003E', {'err': str(e)})
 
         return [{'package_name': pkg.shortname,
                  'version': pkg.candidate.version,
@@ -408,7 +401,7 @@ class AptUpdate(GenericUpdate):
             pkgs = self._apt_cache.get_changes()
             self._apt_cache.close()
         except Exception as e:
-            raise OperationFailed('GGBPKGUPD0006E', {'err': e.message})
+            raise OperationFailed('GGBPKGUPD0006E', {'err': str(e)})
 
         pkg = next((x for x in pkgs if x.shortname == pkg_name), None)
         if not pkg:
@@ -430,7 +423,7 @@ class AptUpdate(GenericUpdate):
             pkgs = self._apt_cache.get_changes()
             self._apt_cache.close()
         except Exception as e:
-            raise OperationFailed('GGBPKGUPD0006E', {'err': e.message})
+            raise OperationFailed('GGBPKGUPD0006E', {'err': str(e)})
 
         pkg = next((x for x in pkgs if x.shortname == pkg_name), None)
         if not pkg:

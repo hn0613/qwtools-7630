@@ -110,7 +110,7 @@ class HostModel(object):
                         break
         except Exception as e:
             wok_log.error('Failed to retrive cpu_model for '
-                          '%s. Error: %s', ARCH, e.__str__())
+                          '%s. Error: %s', ARCH, str(e))
         return ''
 
     def _get_s390x_host_info(self):
@@ -194,7 +194,7 @@ class HostModel(object):
                             s390x_sysinfo[CPUS_SHARED] = int(info[1].strip())
         except Exception as e:
             wok_log.error('Failed to retrieve information from %s file. '
-                          'Error: %s', PROC_SYSINFO, e.__str__())
+                          'Error: %s', PROC_SYSINFO, str(e))
 
         return s390x_sysinfo
 
@@ -243,10 +243,7 @@ class HostModel(object):
                 wok_log.error('Failed to retrieve memory information with'
                               ' command %s. Error: %s' % (LSMEM, err))
         else:
-            if hasattr(psutil, 'phymem_usage'):
-                online_memory = psutil.phymem_usage().total
-            elif hasattr(psutil, 'virtual_memory'):
-                online_memory = psutil.virtual_memory().total
+            online_memory = psutil.virtual_memory().total
 
         memory['online'] = online_memory
         memory['offline'] = offline_memory
@@ -261,23 +258,7 @@ class HostModel(object):
         cpus = {}
         total_cpus = int(self.lscpu.get_total_cpus())
 
-        # psutil is unstable on how to get the number of
-        # cpus, different versions call it differently
-        online_cpus = 0
-
-        if hasattr(psutil, 'cpu_count'):
-            online_cpus = psutil.cpu_count()
-
-        elif hasattr(psutil, 'NUM_CPUS'):
-            online_cpus = psutil.NUM_CPUS
-
-        elif hasattr(psutil, '_psplatform'):
-            for method_name in ['_get_num_cpus', 'get_num_cpus']:
-
-                method = getattr(psutil._psplatform, method_name, None)
-                if method is not None:
-                    online_cpus = method()
-                    break
+        online_cpus = psutil.cpu_count()
 
         if online_cpus > 0:
             offline_cpus = 0
@@ -369,8 +350,8 @@ class HostModel(object):
         try:
             libvirt_mod = __import__('libvirt')
         except Exception as e:
-            wok_log.info('Unable to import libvirt module. Details:',
-                         e.message)
+            wok_log.info('Unable to import libvirt module. Details: %s',
+                         str(e))
             # Ignore any error and assume there is no vm running in the host
             return []
 
@@ -386,12 +367,11 @@ class HostModel(object):
                     if (DOM_STATE_MAP[dom.info()[0]] == state)]
         except Exception as e:
             wok_log.info('Unable to get virtual machines information. '
-                         'Details:', e.message)
+                         'Details: %s', str(e))
             raise OperationFailed('GGBHOST0003E')
 
 
-class HostStatsModel(object):
-    __metaclass__ = Singleton
+class HostStatsModel(object, metaclass=Singleton):
 
     def __init__(self, **kargs):
         self.host_stats = defaultdict(list)
@@ -419,7 +399,7 @@ class HostStatsModel(object):
     def update_host_stats(self):
         preTimeStamp = self.host_stats['timestamp']
         timestamp = time.time()
-        # FIXME when we upgrade psutil, we can get uptime by psutil.uptime
+        # psutil.boot_time() returns the system boot timestamp;
         # we get uptime by float(open("/proc/uptime").readline().split()[0])
         # and calculate the first io_rate after the OS started.
         with open('/proc/uptime') as time_f:
@@ -486,11 +466,7 @@ class HostStatsModel(object):
         prev_recv_bytes = net_recv_bytes[-1] if net_recv_bytes else 0
         prev_sent_bytes = net_sent_bytes[-1] if net_sent_bytes else 0
 
-        net_ios = None
-        if hasattr(psutil, 'net_io_counters'):
-            net_ios = psutil.net_io_counters(True)
-        elif hasattr(psutil, 'network_io_counters'):
-            net_ios = psutil.network_io_counters(True)
+        net_ios = psutil.net_io_counters(True)
 
         recv_bytes = 0
         sent_bytes = 0
@@ -535,8 +511,7 @@ class HostStatsHistoryModel(object):
                 'net_sent_rate': self.history.host_stats['net_sent_rate']}
 
 
-class CapabilitiesModel(object):
-    __metaclass__ = Singleton
+class CapabilitiesModel(object, metaclass=Singleton):
 
     def __init__(self, **kargs):
         wok_log.info('*** Ginger Base: Running capabilities tests ***')

@@ -32,33 +32,34 @@ from wok.exception import NotFoundError
 from wok.exception import OperationFailed
 from wok.plugins.gingerbase.config import gingerBaseLock
 from wok.plugins.gingerbase.utils import validate_repo_url
+from wok.utils import wok_log
 from wok.plugins.gingerbase.yumparser import get_display_name
 from wok.plugins.gingerbase.yumparser import get_expanded_url
 from wok.plugins.gingerbase.yumparser import get_yum_repositories
 from wok.plugins.gingerbase.yumparser import write_repo_to_file
 
 
-class Repositories(object):
-    __metaclass__ = Singleton
-
+class Repositories(object, metaclass=Singleton):
     """
     Class to represent and operate with repositories information.
     """
 
     def __init__(self):
-        try:
-            __import__('dnf')
-            self._pkg_mnger = YumRepo()
-        except ImportError:
+        pkg_managers = [
+            ('dnf', YumRepo),
+            ('yum', YumRepo),
+            ('apt_pkg', AptRepo),
+        ]
+        for module_name, repo_class in pkg_managers:
             try:
-                __import__('yum')
-                self._pkg_mnger = YumRepo()
+                __import__(module_name)
+                wok_log.info('Repo management: using %s (%s)',
+                             repo_class.__name__, module_name)
+                self._pkg_mnger = repo_class()
+                return
             except ImportError:
-                try:
-                    __import__('apt_pkg')
-                    self._pkg_mnger = AptRepo()
-                except ImportError:
-                    raise InvalidOperation('GGBREPOS0014E')
+                wok_log.debug('Repo module %s not available', module_name)
+        raise InvalidOperation('GGBREPOS0014E')
 
     def addRepository(self, params):
         """
@@ -322,7 +323,7 @@ class YumRepo(object):
         entry = repos.get(repo_id)
         parser = SafeConfigParser()
         with open(entry.repofile) as fd:
-            parser.readfp(fd)
+            parser.read_file(fd)
 
         if len(parser.sections()) == 1:
             os.remove(entry.repofile)
@@ -364,7 +365,7 @@ class AptRepo(object):
         try:
             repos = self._sourceslist()
         except Exception as e:
-            raise OperationFailed('GGBREPOS0025E', {'err': e.message})
+            raise OperationFailed('GGBREPOS0025E', {'err': str(e)})
 
         return repos
 
@@ -461,7 +462,7 @@ class AptRepo(object):
                                      file=self.filename)
             repos.save()
         except Exception as e:
-            raise OperationFailed('GGBREPOS0026E', {'err': e.message})
+            raise OperationFailed('GGBREPOS0026E', {'err': str(e)})
         finally:
             gingerBaseLock.release()
         return self._get_repo_id(source_entry)

@@ -155,6 +155,11 @@ gingerbase.init_update = function() {
                             enableRepositoryButtons(false);
                             gingerbase.enableRepository(name, enable, function() {
                                 wok.topic('gingerbase/repositoryUpdated').publish();
+                            }, function(error) {
+                                var reason = error && error['responseJSON']
+                                             && error['responseJSON']['reason'];
+                                wok.message.error(reason || i18n['GGBUPD6008M']);
+                                enableRepositoryButtons(false);
                             });
                         });
                     } else {

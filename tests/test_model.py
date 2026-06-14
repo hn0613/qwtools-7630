@@ -24,7 +24,9 @@ import unittest
 
 import wok.objectstore
 from wok.basemodel import Singleton
+from wok.exception import InvalidOperation
 from wok.exception import InvalidParameter
+from wok.exception import MissingParameter
 from wok.exception import NotFoundError
 from wok.plugins.gingerbase.model import model
 from wok.rollbackcontext import RollbackContext
@@ -242,6 +244,123 @@ class ModelTests(unittest.TestCase):
 
         # remove files creates
         inst.repository_delete(repo_id)
+
+    def test_repository_toggle_already_enabled(self):
+        inst = model.Model(objstore_loc=self.tmp_store)
+
+        repo_type = inst.capabilities_lookup()['repo_mngt_tool']
+        if repo_type == 'yum':
+            repo = {'repo_id': 'toggle-enabled-test',
+                    'baseurl': 'http://www.fedora.org'}
+        elif repo_type == 'deb':
+            repo = {'baseurl': 'http://archive.ubuntu.com/ubuntu/',
+                    'config': {'dist': 'quantal'}}
+        else:
+            return
+
+        with RollbackContext() as rollback:
+            repo_id = inst.repositories_create(repo)
+            rollback.prependDefer(inst.repository_delete, repo_id)
+            # Newly created repos are enabled; enabling again must fail
+            self.assertRaises(InvalidOperation,
+                              inst.repository_enable, repo_id)
+
+    def test_repository_toggle_already_disabled(self):
+        inst = model.Model(objstore_loc=self.tmp_store)
+
+        repo_type = inst.capabilities_lookup()['repo_mngt_tool']
+        if repo_type == 'yum':
+            repo = {'repo_id': 'toggle-disabled-test',
+                    'baseurl': 'http://www.fedora.org'}
+        elif repo_type == 'deb':
+            repo = {'baseurl': 'http://archive.ubuntu.com/ubuntu/',
+                    'config': {'dist': 'quantal'}}
+        else:
+            return
+
+        with RollbackContext() as rollback:
+            repo_id = inst.repositories_create(repo)
+            rollback.prependDefer(inst.repository_delete, repo_id)
+            inst.repository_disable(repo_id)
+            # Already disabled; disabling again must fail
+            self.assertRaises(InvalidOperation,
+                              inst.repository_disable, repo_id)
+
+    def test_repository_not_found_all_operations(self):
+        inst = model.Model(objstore_loc=self.tmp_store)
+        fake_id = 'nonexistent_repo_xyz_convergence_test'
+
+        self.assertRaises(NotFoundError,
+                          inst.repository_lookup, fake_id)
+        self.assertRaises(NotFoundError,
+                          inst.repository_delete, fake_id)
+        self.assertRaises(NotFoundError,
+                          inst.repository_enable, fake_id)
+        self.assertRaises(NotFoundError,
+                          inst.repository_disable, fake_id)
+        self.assertRaises(NotFoundError,
+                          inst.repository_update, fake_id,
+                          {'baseurl': 'http://example.com'})
+
+    def test_repository_update_empty_url(self):
+        inst = model.Model(objstore_loc=self.tmp_store)
+
+        repo_type = inst.capabilities_lookup()['repo_mngt_tool']
+        if repo_type != 'yum':
+            return
+
+        repo = {'repo_id': 'empty-url-test',
+                'baseurl': 'http://www.fedora.org'}
+        with RollbackContext() as rollback:
+            repo_id = inst.repositories_create(repo)
+            rollback.prependDefer(inst.repository_delete, repo_id)
+            # Whitespace-only baseurl with no mirrorlist/metalink
+            self.assertRaises(MissingParameter,
+                              inst.repository_update, repo_id,
+                              {'baseurl': '   '})
+
+    def test_repository_mirrorlist_metalink_exclusion(self):
+        inst = model.Model(objstore_loc=self.tmp_store)
+
+        repo_type = inst.capabilities_lookup()['repo_mngt_tool']
+        if repo_type != 'yum':
+            return
+
+        repo = {
+            'repo_id': 'mirror-metalink-test',
+            'baseurl': 'http://www.fedora.org',
+            'config': {
+                'mirrorlist': 'http://mirrors.example.com/mirrorlist',
+                'metalink': 'http://mirrors.example.com/metalink'
+            }
+        }
+        self.assertRaises(InvalidOperation,
+                          inst.repositories_create, repo)
+
+    def test_mock_repository_error_paths(self):
+        from wok.plugins.gingerbase.mockmodel import MockModel
+        inst = MockModel(objstore_loc=self.tmp_store)
+
+        # Not-found on all operations
+        self.assertRaises(NotFoundError,
+                          inst.repository_lookup, 'nonexistent')
+        self.assertRaises(NotFoundError,
+                          inst.repository_delete, 'nonexistent')
+        self.assertRaises(NotFoundError,
+                          inst.repository_enable, 'nonexistent')
+
+        # Pre-seeded repo is enabled; enabling again must fail
+        preseeded = 'gingerbase_repo_1392167832'
+        self.assertRaises(InvalidOperation,
+                          inst.repository_enable, preseeded)
+
+        # Disable it, then disabling again must fail
+        inst.repository_disable(preseeded)
+        self.assertRaises(InvalidOperation,
+                          inst.repository_disable, preseeded)
+
+        # Re-enable for clean teardown
+        inst.repository_enable(preseeded)
 
 
 class BaseModelTests(unittest.TestCase):

@@ -581,56 +581,49 @@ class CapabilitiesModel(object):
 class RepositoriesModel(object):
     def __init__(self, **kargs):
         try:
-            self.host_repositories = Repositories()
+            self._host_repositories = Repositories()
         except Exception:
-            self.host_repositories = None
+            self._host_repositories = None
+
+    @property
+    def _repo_manager(self):
+        """Guarded accessor -- raises if no repo backend available."""
+        if self._host_repositories is None:
+            raise InvalidOperation('GGBREPOS0014E')
+        return self._host_repositories
 
     def get_list(self):
-        if self.host_repositories is None:
-            raise InvalidOperation('GGBREPOS0014E')
-
-        return sorted(self.host_repositories.getRepositories())
+        return sorted(self._repo_manager.getRepositories())
 
     def create(self, params):
-        if self.host_repositories is None:
-            raise InvalidOperation('GGBREPOS0014E')
-
-        return self.host_repositories.addRepository(params)
+        return self._repo_manager.addRepository(params)
 
 
 class RepositoryModel(object):
     def __init__(self, **kargs):
         try:
-            self._repositories = Repositories()
+            self.__repositories = Repositories()
         except Exception:
-            self._repositories = None
+            self.__repositories = None
+
+    @property
+    def _repo_manager(self):
+        """Guarded accessor -- raises if no repo backend available."""
+        if self.__repositories is None:
+            raise InvalidOperation('GGBREPOS0014E')
+        return self.__repositories
 
     def lookup(self, repo_id):
-        if self._repositories is None:
-            raise InvalidOperation('GGBREPOS0014E')
-
-        return self._repositories.getRepository(repo_id)
+        return self._repo_manager.getRepository(repo_id)
 
     def enable(self, repo_id):
-        if self._repositories is None:
-            raise InvalidOperation('GGBREPOS0014E')
-
-        return self._repositories.enableRepository(repo_id)
+        return self._repo_manager.enableRepository(repo_id)
 
     def disable(self, repo_id):
-        if self._repositories is None:
-            raise InvalidOperation('GGBREPOS0014E')
-
-        return self._repositories.disableRepository(repo_id)
+        return self._repo_manager.disableRepository(repo_id)
 
     def update(self, repo_id, params):
-        if self._repositories is None:
-            raise InvalidOperation('GGBREPOS0014E')
-
-        return self._repositories.updateRepository(repo_id, params)
+        return self._repo_manager.updateRepository(repo_id, params)
 
     def delete(self, repo_id):
-        if self._repositories is None:
-            raise InvalidOperation('GGBREPOS0014E')
-
-        return self._repositories.removeRepository(repo_id)
+        return self._repo_manager.removeRepository(repo_id)

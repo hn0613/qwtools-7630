@@ -165,3 +165,15 @@ class RestTests(unittest.TestCase):
         # Delete the repository
         resp = self.request('%s/fedora-fake' % base_uri, '{}', 'DELETE')
         self.assertEquals(204, resp.status)
+
+    def test_repository_error_paths(self):
+        base_uri = '/plugins/gingerbase/host/repositories'
+
+        # Lookup nonexistent repo should return 404
+        resp = self.request('%s/nonexistent_repo_xyz' % base_uri)
+        self.assertEquals(404, resp.status)
+
+        # Delete nonexistent repo should return 404
+        resp = self.request(
+            '%s/nonexistent_repo_xyz' % base_uri, '{}', 'DELETE')
+        self.assertEquals(404, resp.status)

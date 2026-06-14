@@ -391,7 +391,7 @@ var gingerbase = {
 
     updateRepository : function(name, settings, suc, err) {
         var reposID = encodeURIComponent(name);
-        $.ajax({
+        wok.requestJSON({
             url : "plugins/gingerbase/host/repositories/" + reposID,
             type : 'PUT',
             contentType : 'application/json',
@@ -404,7 +404,7 @@ var gingerbase = {
 
     enableRepository : function(name, enable, suc, err) {
         var reposID = encodeURIComponent(name);
-        $.ajax({
+        wok.requestJSON({
             url : "plugins/gingerbase/host/repositories/" + reposID +
                   '/' + (enable === true ? 'enable' : 'disable'),
             type : 'POST',

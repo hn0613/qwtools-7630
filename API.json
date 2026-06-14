@@ -108,6 +108,16 @@
                             "description": "URL to a metalink file for the repomd.xml",
                             "type": "string",
                             "error": "GGBREPOS0029E"
+                        },
+                        "gpgcheck": {
+                            "description": "Indicates if a GPG signature check on the packages gotten from repository should be performed.",
+                            "type": "boolean",
+                            "error": "GGBREPOS0009E"
+                        },
+                        "gpgkey": {
+                            "description": "URL pointing to the ASCII-armored GPG key file for the repository.",
+                            "type": "string",
+                            "error": "GGBREPOS0010E"
                         }
                     }
                 }
@@ -153,6 +163,11 @@
                             "description": "URL to a file containing a list of baseurls for YUM repository",
                             "type": "string",
                             "error": "GGBREPOS0007E"
+                        },
+                        "metalink": {
+                            "description": "URL to a metalink file for the repomd.xml",
+                            "type": "string",
+                            "error": "GGBREPOS0029E"
                         },
                         "gpgcheck": {
                             "description": "Indicates if a GPG signature check on the packages gotten from repository should be performed.",

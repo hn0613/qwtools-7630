@@ -24,6 +24,8 @@ import time
 
 import lxml.etree as ET
 from wok.asynctask import AsyncTask
+from wok.exception import InvalidOperation
+from wok.exception import NotFoundError
 from wok.objectstore import ObjectStore
 from wok.plugins.gingerbase import config
 from wok.plugins.gingerbase import swupdate
@@ -141,6 +143,9 @@ class MockModel(Model):
             repo_id = 'gingerbase_repo_%s' % str(int(time.time() * 1000))
             params.update({'repo_id': repo_id})
 
+        if repo_id in self._mock_repositories.repos:
+            raise InvalidOperation('GGBREPOS0022E', {'repo_id': repo_id})
+
         config = params.get('config', {})
         info = {'repo_id': repo_id,
                 'baseurl': params['baseurl'],
@@ -153,18 +158,32 @@ class MockModel(Model):
         return repo_id
 
     def _mock_repository_lookup(self, repo_id):
+        if repo_id not in self._mock_repositories.repos:
+            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
         return self._mock_repositories.repos[repo_id]
 
     def _mock_repository_delete(self, repo_id):
+        if repo_id not in self._mock_repositories.repos:
+            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
         del self._mock_repositories.repos[repo_id]
 
     def _mock_repository_enable(self, repo_id):
+        if repo_id not in self._mock_repositories.repos:
+            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
+        if self._mock_repositories.repos[repo_id]['enabled']:
+            raise InvalidOperation('GGBREPOS0015E', {'repo_id': repo_id})
         self._mock_repositories.repos[repo_id]['enabled'] = True
 
     def _mock_repository_disable(self, repo_id):
+        if repo_id not in self._mock_repositories.repos:
+            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
+        if not self._mock_repositories.repos[repo_id]['enabled']:
+            raise InvalidOperation('GGBREPOS0016E', {'repo_id': repo_id})
         self._mock_repositories.repos[repo_id]['enabled'] = False
 
     def _mock_repository_update(self, repo_id, params):
+        if repo_id not in self._mock_repositories.repos:
+            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
         self._mock_repositories.repos[repo_id].update(params)
         return repo_id
 

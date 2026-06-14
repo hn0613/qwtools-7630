@@ -116,7 +116,58 @@ class Repositories(object):
         return self._pkg_mnger.removeRepo(repo_id)
 
 
-class YumRepo(object):
+class _RepoBackend(object):
+    """
+    Shared base for repository backends (YumRepo, AptRepo).
+
+    Subclasses must set TYPE, CONFIG_ENTRY and implement all public methods.
+    The helpers below centralize validation and error handling that was
+    previously duplicated across backends:
+
+    - _raise_not_found:        single point for GGBREPOS0012E
+    - _check_toggle_state:     single point for GGBREPOS0015E / GGBREPOS0016E
+    - _validate_url_if_present: single-point URL validation (with expansion)
+    - _validate_yum_urls:      YUM multi-URL validation + mirrorlist/metalink
+                               mutual exclusion (GGBREPOS0030E)
+    - _empty_to_none:          whitespace-only string normalization
+    """
+
+    @staticmethod
+    def _raise_not_found(repo_id):
+        raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
+
+    @staticmethod
+    def _check_toggle_state(is_enabled, enable, repo_id):
+        if enable and is_enabled:
+            raise InvalidOperation('GGBREPOS0015E', {'repo_id': repo_id})
+        if not enable and not is_enabled:
+            raise InvalidOperation('GGBREPOS0016E', {'repo_id': repo_id})
+
+    @staticmethod
+    def _validate_url_if_present(url_value):
+        if url_value:
+            validate_repo_url(get_expanded_url(url_value))
+
+    @staticmethod
+    def _validate_yum_urls(baseurl, mirrorlist, metalink):
+        if baseurl:
+            validate_repo_url(get_expanded_url(baseurl))
+        if mirrorlist:
+            validate_repo_url(get_expanded_url(mirrorlist))
+        if metalink:
+            validate_repo_url(get_expanded_url(metalink))
+        if mirrorlist and metalink:
+            raise InvalidOperation('GGBREPOS0030E')
+
+    @staticmethod
+    def _empty_to_none(value):
+        if value is not None and isinstance(value, str) \
+           and len(value.strip()) == 0:
+            return None
+        return value
+
+
+class YumRepo(_RepoBackend):
     """
     Class to represent and operate with YUM repositories.
     It's loaded only on those systems listed at YUM_DISTROS and loads necessary
@@ -155,8 +206,8 @@ class YumRepo(object):
         """
         repos = self._get_repos('GGBREPOS0025E')
 
-        if repo_id not in repos.keys():
-            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
+        if repo_id not in repos:
+            self._raise_not_found(repo_id)
 
         entry = repos.get(repo_id)
 
@@ -187,24 +238,14 @@ class YumRepo(object):
         if not baseurl and not mirrorlist and not metalink:
             raise MissingParameter('GGBREPOS0013E')
 
-        if baseurl:
-            validate_repo_url(get_expanded_url(baseurl))
-
-        if mirrorlist:
-            validate_repo_url(get_expanded_url(mirrorlist))
-
-        if metalink:
-            validate_repo_url(get_expanded_url(metalink))
-
-        if mirrorlist and metalink:
-            raise InvalidOperation('GGBREPOS0030E')
+        self._validate_yum_urls(baseurl, mirrorlist, metalink)
 
         repo_id = params.get('repo_id', None)
         if repo_id is None:
             repo_id = 'gingerbase_repo_%s' % str(int(time.time() * 1000))
 
         repos = self._get_repos('GGBREPOS0026E')
-        if repo_id in repos.keys():
+        if repo_id in repos:
             raise InvalidOperation('GGBREPOS0022E', {'repo_id': repo_id})
 
         repo_name = config.get('repo_name', repo_id)
@@ -232,15 +273,11 @@ class YumRepo(object):
 
     def toggleRepo(self, repo_id, enable):
         repos = self._get_repos('GGBREPOS0011E')
-        if repo_id not in repos.keys():
-            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
+        if repo_id not in repos:
+            self._raise_not_found(repo_id)
 
         entry = repos.get(repo_id)
-        if enable and entry.enabled:
-            raise InvalidOperation('GGBREPOS0015E', {'repo_id': repo_id})
-
-        if not enable and not entry.enabled:
-            raise InvalidOperation('GGBREPOS0016E', {'repo_id': repo_id})
+        self._check_toggle_state(entry.enabled, enable, repo_id)
 
         gingerBaseLock.acquire()
         try:
@@ -265,42 +302,31 @@ class YumRepo(object):
         Update a given repository in repositories.Repositories() format
         """
         repos = self._get_repos('GGBREPOS0011E')
-        if repo_id not in repos.keys():
-            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
+        if repo_id not in repos:
+            self._raise_not_found(repo_id)
 
         entry = repos.get(repo_id)
 
-        baseurl = params.get('baseurl', entry.baseurl)
+        baseurl = self._empty_to_none(params.get('baseurl', entry.baseurl))
         config = params.get('config', {})
-        mirrorlist = config.get('mirrorlist', entry.mirrorlist)
-        metalink = config.get('metalink', entry.metalink)
-
-        if baseurl is not None and len(baseurl.strip()) == 0:
-            baseurl = None
-
-        if mirrorlist is not None and len(mirrorlist.strip()) == 0:
-            mirrorlist = None
-
-        if metalink is not None and len(metalink.strip()) == 0:
-            metalink = None
+        mirrorlist = self._empty_to_none(
+            config.get('mirrorlist', entry.mirrorlist))
+        metalink = self._empty_to_none(
+            config.get('metalink', entry.metalink))
 
         if baseurl is None and mirrorlist is None and metalink is None:
             raise MissingParameter('GGBREPOS0013E')
 
+        self._validate_yum_urls(baseurl, mirrorlist, metalink)
+
         if baseurl is not None:
-            validate_repo_url(get_expanded_url(baseurl))
             entry.baseurl = baseurl
 
         if mirrorlist is not None:
-            validate_repo_url(get_expanded_url(mirrorlist))
             entry.mirrorlist = mirrorlist
 
         if metalink is not None:
-            validate_repo_url(get_expanded_url(metalink))
             entry.metalink = metalink
-
-        if mirrorlist and metalink:
-            raise InvalidOperation('GGBREPOS0030E')
 
         entry.id = params.get('repo_id', repo_id)
         entry.name = config.get('repo_name', entry.name)
@@ -316,8 +342,8 @@ class YumRepo(object):
         Remove a given repository
         """
         repos = self._get_repos('GGBREPOS0027E')
-        if repo_id not in repos.keys():
-            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
+        if repo_id not in repos:
+            self._raise_not_found(repo_id)
 
         entry = repos.get(repo_id)
         parser = SafeConfigParser()
@@ -333,7 +359,7 @@ class YumRepo(object):
             parser.write(fd)
 
 
-class AptRepo(object):
+class AptRepo(_RepoBackend):
     """
     Class to represent and operate with YUM repositories.
     It's loaded only on those systems listed at YUM_DISTROS and loads necessary
@@ -427,7 +453,7 @@ class AptRepo(object):
         """
         r = self._get_source_entry(repo_id)
         if r is None:
-            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
+            self._raise_not_found(repo_id)
 
         info = {'enabled': not r.disabled,
                 'baseurl': r.uri,
@@ -472,13 +498,9 @@ class AptRepo(object):
         """
         r = self._get_source_entry(repo_id)
         if r is None:
-            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
+            self._raise_not_found(repo_id)
 
-        if enable and not r.disabled:
-            raise InvalidOperation('GGBREPOS0015E', {'repo_id': repo_id})
-
-        if not enable and r.disabled:
-            raise InvalidOperation('GGBREPOS0016E', {'repo_id': repo_id})
+        self._check_toggle_state(not r.disabled, enable, repo_id)
 
         if enable:
             line = 'deb'
@@ -507,8 +529,8 @@ class AptRepo(object):
         """
         old_info = self.getRepo(repo_id)
         updated_info = copy.deepcopy(old_info)
-        updated_info['baseurl'] = params.get(
-            'baseurl', updated_info['baseurl'])
+        new_baseurl = params.get('baseurl', updated_info['baseurl'])
+        updated_info['baseurl'] = new_baseurl
 
         if 'config' in params.keys():
             config = params['config']
@@ -516,6 +538,9 @@ class AptRepo(object):
                 'dist', old_info['config']['dist'])
             updated_info['config']['comps'] = config.get(
                 'comps', old_info['config']['comps'])
+
+        # Validate new URL BEFORE removing the old entry to prevent data loss
+        self._validate_url_if_present(new_baseurl)
 
         self.removeRepo(repo_id)
         try:
@@ -530,7 +555,7 @@ class AptRepo(object):
         """
         r = self._get_source_entry(repo_id)
         if r is None:
-            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
+            self._raise_not_found(repo_id)
 
         gingerBaseLock.acquire()
         try:

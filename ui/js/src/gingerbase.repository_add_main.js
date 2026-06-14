@@ -81,7 +81,7 @@ gingerbase.repository_add_main = function() {
         weedObject(formData);
         if(formData.config && formData.config.comps) {
             formData.config.comps=formData.config.comps.split(/[,\s]/);
-            for(var i=0; i>formData.config.comps.length; i++) {
+            for(var i=0; i<formData.config.comps.length; i++) {
                 formData.config.comps[i]=formData.config.comps[i].trim();
             }
             for (var j=formData.config.comps.indexOf(""); j!=-1; j=formData.config.comps.indexOf("")) {

@@ -378,22 +378,32 @@ gingerbase.init_update = function() {
         $('#software-updates-progress-container').removeClass('hidden');
         $(progressArea).text('');
         var filter = 'status=running&target_uri=' + encodeURIComponent('^/plugins/gingerbase/host/swupdate/*');
-            gingerbase.getTasksByFilter(filter, function(tasks) {
-                var result = {};
-                if (tasks.length > 0) {
-                    gingerbase.getTask(tasks[0].id, function(task){
-                        result = task;
-                    }, function(error){});
-                }
-                if (result['status'] == 'running') {
-                    reloadProgressArea(result);
-                    $(".wok-mask").fadeOut(300, function() {});
-                } else {
-                    gingerbase.init_update_packages();
-                }
-            }, function(error) {
-                wok.message.error(i18n['GGBUPD6011M']);
-            }, reloadProgressArea);
+        gingerbase.getTasksByFilter(filter, function(tasks) {
+            if (tasks.length > 0) {
+                new gingerbase.TaskTracker(tasks[0].id, {
+                    interval: 700,
+                    maxRetries: 170,
+                    onProgress: reloadProgressArea,
+                    onSuccess: function(result) {
+                        reloadProgressArea(result);
+                        gingerbase.init_update_packages();
+                    },
+                    onError: function(result) {
+                        reloadProgressArea(result);
+                        gingerbase.init_update_packages();
+                    },
+                    onUnreachable: function() {
+                        wok.message.error(i18n['GGBUPD6011M']);
+                        gingerbase.init_update_packages();
+                    }
+                });
+                $(".wok-mask").fadeOut(300, function() {});
+            } else {
+                gingerbase.init_update_packages();
+            }
+        }, function(error) {
+            wok.message.error(i18n['GGBUPD6011M']);
+        });
     };
 
     var initPage = function() {

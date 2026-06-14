@@ -189,22 +189,13 @@ gingerbase.init_dashboard = function() {
                     'time': i18n['GGBDR6007M']
                 });
 
-                if (gingerbase.trackingTasks.indexOf(tasks[i].id) >= 0) {
-                    continue;
-                }
-
                 gingerbase.trackTask(tasks[i].id, function(result) {
                     wok.topic('gingerbase/debugReportAdded').publish();
                 }, function(result) {
-                    // Error message from Async Task status
-                    if (result['message']) {
-                        var errText = result['message'];
-                    }
-                    // Error message from standard gingerbase exception
-                    else {
-                        var errText = result['responseJSON']['reason'];
-                    }
-                    result && wok.message.error(errText);
+                    var errText = result['message'] ||
+                        (result['responseJSON'] && result['responseJSON']['reason']) ||
+                        '';
+                    errText && wok.message.error(errText);
                     wok.topic('gingerbase/debugReportAdded').publish();
                 }, null);
             }

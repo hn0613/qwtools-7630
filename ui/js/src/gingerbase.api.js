@@ -21,7 +21,7 @@ var gingerbase = {
 
     widget: {},
 
-    trackingTasks: [],
+    _activeTasks: {},
 
     /**
      *
@@ -102,11 +102,23 @@ var gingerbase = {
         });
     },
 
+    // Deprecated: use getTaskAsync instead to avoid blocking the UI thread
     getTask : function(taskId, suc, err) {
         wok.requestJSON({
             url : 'plugins/gingerbase/tasks/' + encodeURIComponent(taskId),
             type : 'GET',
             async: false,
+            contentType : 'application/json',
+            dataType : 'json',
+            success : suc,
+            error : err
+        });
+    },
+
+    getTaskAsync : function(taskId, suc, err) {
+        wok.requestJSON({
+            url : 'plugins/gingerbase/tasks/' + encodeURIComponent(taskId),
+            type : 'GET',
             contentType : 'application/json',
             dataType : 'json',
             success : suc,
@@ -126,6 +138,105 @@ var gingerbase = {
         });
     },
 
+    TaskTracker : function(taskID, options) {
+        var defaults = {
+            interval: 2000,
+            maxRetries: 0,
+            timeout: 0,
+            onProgress: null,
+            onSuccess: null,
+            onError: null,
+            onUnreachable: null
+        };
+
+        var settings = $.extend({}, defaults, options);
+        var timer = null;
+        var startTime = Date.now();
+        var retryCount = 0;
+        var stopped = false;
+
+        var self = {
+            taskID: taskID,
+            stop: stop,
+            start: start
+        };
+
+        function stop() {
+            stopped = true;
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+            delete gingerbase._activeTasks[taskID];
+        }
+
+        function poll() {
+            if (stopped) return;
+
+            if (settings.timeout > 0 && (Date.now() - startTime) > settings.timeout) {
+                stop();
+                settings.onUnreachable && settings.onUnreachable({reason: 'timeout'});
+                return;
+            }
+
+            gingerbase.getTaskAsync(taskID, function(result) {
+                if (stopped) return;
+                retryCount = 0;
+
+                switch (result['status']) {
+                case 'running':
+                    settings.onProgress && settings.onProgress(result);
+                    timer = setTimeout(poll, settings.interval);
+                    break;
+                case 'finished':
+                    stop();
+                    settings.onSuccess && settings.onSuccess(result);
+                    break;
+                case 'failed':
+                    stop();
+                    settings.onError && settings.onError(result);
+                    break;
+                default:
+                    timer = setTimeout(poll, settings.interval);
+                    break;
+                }
+            }, function(error) {
+                if (stopped) return;
+                retryCount++;
+                if (settings.maxRetries > 0 && retryCount >= settings.maxRetries) {
+                    stop();
+                    settings.onUnreachable && settings.onUnreachable(error);
+                } else {
+                    timer = setTimeout(poll, settings.interval);
+                }
+            });
+        }
+
+        function start() {
+            if (gingerbase._activeTasks[taskID]) {
+                return gingerbase._activeTasks[taskID];
+            }
+            stopped = false;
+            startTime = Date.now();
+            retryCount = 0;
+            gingerbase._activeTasks[taskID] = self;
+            poll();
+            return self;
+        }
+
+        return start();
+    },
+
+    recoverTasks : function(filter, options) {
+        gingerbase.getTasksByFilter(filter, function(tasks) {
+            for (var i = 0; i < tasks.length; i++) {
+                if (!gingerbase._activeTasks[tasks[i].id]) {
+                    new gingerbase.TaskTracker(tasks[i].id, options);
+                }
+            }
+        }, null);
+    },
+
     listReports : function(suc, err) {
         wok.requestJSON({
             url : 'plugins/gingerbase/debugreports',
@@ -139,29 +250,14 @@ var gingerbase = {
     },
 
     trackTask : function(taskID, suc, err, progress) {
-        var onTaskResponse = function(result) {
-            var taskStatus = result['status'];
-            switch(taskStatus) {
-            case 'running':
-                progress && progress(result);
-                setTimeout(function() {
-                    gingerbase.trackTask(taskID, suc, err, progress);
-                }, 2000);
-                break;
-            case 'finished':
-                suc && suc(result);
-                break;
-            case 'failed':
-                err && err(result);
-                break;
-            default:
-                break;
-            }
-        };
-
-        gingerbase.getTask(taskID, onTaskResponse, err);
-        if(gingerbase.trackingTasks.indexOf(taskID) < 0)
-            gingerbase.trackingTasks.push(taskID);
+        return new gingerbase.TaskTracker(taskID, {
+            interval: 2000,
+            maxRetries: 60,
+            onProgress: progress,
+            onSuccess: suc,
+            onError: err,
+            onUnreachable: err
+        });
     },
 
     createReport: function(settings, suc, err, progress) {
@@ -248,119 +344,63 @@ var gingerbase = {
     },
 
     softwareUpdateProgress : function(suc, err, progress) {
-        var taskID = -1;
-        var onResponse = function(data) {
-            taskID = data['id'];
-            trackTask();
-        };
-
-        var trackTask = function() {
-            gingerbase.getTask(taskID, onTaskResponse, err);
-        };
-
-        var onTaskResponse = function(result) {
-            var taskStatus = result['status'];
-            switch(taskStatus) {
-            case 'running':
-                progress && progress(result);
-                setTimeout(function() {
-                    trackTask();
-                }, 1000);
-                break;
-            case 'finished':
-            case 'failed':
-                suc(result);
-                break;
-            default:
-                break;
-            }
-        };
-
         wok.requestJSON({
             url : 'plugins/gingerbase/host/swupdateprogress',
             type : "GET",
             contentType : "application/json",
             dataType : "json",
-            success : onResponse,
+            success : function(data) {
+                new gingerbase.TaskTracker(data['id'], {
+                    interval: 1000,
+                    maxRetries: 120,
+                    onProgress: progress,
+                    onSuccess: suc,
+                    onError: suc,
+                    onUnreachable: err
+                });
+            },
             error : err
         });
     },
 
     updateSoftware : function(pack, suc, err, progress) {
-        var taskID = -1;
-        var onResponse = function(data) {
-            taskID = data['id'];
-            trackTask();
-        };
-
-        var trackTask = function() {
-            gingerbase.getTask(taskID, onTaskResponse, err);
-        };
-
-        var onTaskResponse = function(result) {
-            var taskStatus = result['status'];
-            switch(taskStatus) {
-            case 'running':
-                progress();
-                setTimeout(function() {
-                    trackTask();
-                }, 1000);
-                break;
-            case 'finished':
-            case 'failed':
-                suc(result);
-                break;
-            default:
-                break;
-            }
-        };
-
         wok.requestJSON({
             url : 'plugins/gingerbase/host/packagesupdate/' + pack + '/upgrade',
             type : "POST",
-            async: false,
             contentType : "application/json",
             dataType : "json",
-            success : onResponse,
+            success : function(data) {
+                new gingerbase.TaskTracker(data['id'], {
+                    interval: 1000,
+                    maxRetries: 120,
+                    onProgress: function() {
+                        progress && progress();
+                    },
+                    onSuccess: suc,
+                    onError: suc,
+                    onUnreachable: err
+                });
+            },
             error : err
         });
     },
 
     updateAllSoftware : function(suc, err, progress) {
-        var taskID = -1;
-        var onResponse = function(data) {
-            taskID = data['id'];
-            trackTask();
-        };
-
-        var trackTask = function() {
-            gingerbase.getTask(taskID, onTaskResponse, err);
-        };
-
-        var onTaskResponse = function(result) {
-            var taskStatus = result['status'];
-            switch(taskStatus) {
-            case 'running':
-                progress && progress(result);
-                setTimeout(function() {
-                    trackTask();
-                }, 700);
-                break;
-            case 'finished':
-            case 'failed':
-                suc(result);
-                break;
-            default:
-                break;
-            }
-        };
-
         wok.requestJSON({
             url : 'plugins/gingerbase/host/swupdate',
             type : "POST",
             contentType : "application/json",
             dataType : "json",
-            success : onResponse,
+            success : function(data) {
+                new gingerbase.TaskTracker(data['id'], {
+                    interval: 700,
+                    maxRetries: 170,
+                    onProgress: progress,
+                    onSuccess: suc,
+                    onError: suc,
+                    onUnreachable: err
+                });
+            },
             error : err
         });
     },

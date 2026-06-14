@@ -19,10 +19,8 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301 USA
 import distro
-import glob
 import os
 import platform
-import re
 import time
 from collections import defaultdict
 
@@ -40,6 +38,7 @@ from wok.plugins.gingerbase.model.debugreports import DebugReportsModel
 from wok.plugins.gingerbase.model.smt import SmtModel
 from wok.plugins.gingerbase.repositories import Repositories
 from wok.plugins.gingerbase.swupdate import SoftwareUpdate
+from wok.plugins.gingerbase import sysinfo
 from wok.utils import run_command
 from wok.utils import wok_log
 
@@ -53,15 +52,6 @@ DOM_STATE_MAP = {0: 'nostate',
                  6: 'crashed',
                  7: 'pmsuspended'}
 
-ARCH = platform.machine()
-PROC_CPUINFO = '/proc/cpuinfo'
-PROC_SYSINFO = '/proc/sysinfo'
-LSMEM = 'lsmem'
-CPUS_DEDICATED = 'cpus_dedicated'
-CPUS_SHARED = 'cpus_shared'
-LPAR_NAME = 'lpar_name'
-LPAR_NUMBER = 'lpar_number'
-
 
 class HostModel(object):
     def __init__(self, **kargs):
@@ -70,265 +60,73 @@ class HostModel(object):
         self.task = TaskModel(**kargs)
         self.lscpu = LsCpu()
 
-    def _get_ppc_cpu_model(self):
-        """
-        method to get cpu_model for ppc architecture
-        """
-        res = {}
-        with open(PROC_CPUINFO) as f:
-            for line in f:
-                # Parse CPU, CPU's revision and CPU's clock information
-                for key in ['cpu', 'revision', 'clock']:
-                    if key in line:
-                        info = line.split(':')[1].strip()
-                        if key == 'clock':
-                            value = float(info.split('MHz')[0].strip()) / 1000
-                        else:
-                            value = info.split('(')[0].strip()
-                        res[key] = value
+    def _get_s390x_extensions(self, host_info):
+        """Collect s390x-specific fields that extend the base info.
 
-                        # Power machines show, for each cpu/core, a block with
-                        # all cpu information. Here we control the scan of the
-                        # necessary information (1st block provides
-                        # everything), skipping the function when find all
-                        # information.
-                        if len(res.keys()) == 3:
-                            return '%(cpu)s (%(revision)s) @ %(clock)s GHz\
-                                    ' % res
-
-        return ''
-
-    def _get_x86_cpu_model(self):
+        Returns a dict with keys ``cpus`` (augmented with
+        *dedicated* and *shared*), ``cpu_model``, and
+        ``virtualization``.  All values degrade gracefully when
+        ``/proc/sysinfo`` or lscpu is unavailable.
         """
-        method to get cpu_model for x86 architecture
-        """
-        try:
-            with open(PROC_CPUINFO) as f:
-                for line in f:
-                    if 'model name' in line:
-                        return line.split(':')[1].strip()
-                        break
-        except Exception as e:
-            wok_log.error('Failed to retrive cpu_model for '
-                          '%s. Error: %s', ARCH, e.__str__())
-        return ''
+        ext = {}
+        sysinfo_data = sysinfo.parse_s390x_sysinfo()
 
-    def _get_s390x_host_info(self):
-        """
-        method to get additional host details
-        specific to s390x architecture
-        :return: dictionary
-        """
-        host_info = {}
-        host_info['cpus'] = self._get_cpus()
-        host_info['cpus']['dedicated'] = 0
-        host_info['cpus']['shared'] = 0
-        host_info['cpu_model'] = ''
-        host_info['virtualization'] = {}
-        s390x_sysinfo = self._get_s390x_sysinfo()
-        if 'manufacturer' in s390x_sysinfo.keys():
-            host_info['cpu_model'] = s390x_sysinfo['manufacturer']
-        if 'type' in s390x_sysinfo.keys():
-            host_info['cpu_model'] = \
-                host_info['cpu_model'] + '/' + s390x_sysinfo['type']
-        if 'model' in s390x_sysinfo.keys():
-            host_info['cpu_model'] = \
-                host_info['cpu_model'] + '/' + s390x_sysinfo['model']
-        if CPUS_DEDICATED in s390x_sysinfo.keys():
-            host_info['cpus']['dedicated'] = s390x_sysinfo[CPUS_DEDICATED]
-        if CPUS_SHARED in s390x_sysinfo.keys():
-            host_info['cpus']['shared'] = s390x_sysinfo[CPUS_SHARED]
-        host_info['virtualization']['hypervisor'] = \
-            self.lscpu.get_hypervisor()
-        host_info['virtualization']['hypervisor_vendor'] = \
-            self.lscpu.get_hypervisor_vendor()
-        host_info['virtualization'][LPAR_NAME] = ''
-        host_info['virtualization'][LPAR_NUMBER] = ''
-        if LPAR_NAME in s390x_sysinfo.keys():
-            host_info['virtualization'][LPAR_NAME] = s390x_sysinfo[LPAR_NAME]
-        if LPAR_NUMBER in s390x_sysinfo.keys():
-            host_info['virtualization'][LPAR_NUMBER] = \
-                s390x_sysinfo[LPAR_NUMBER]
+        # Augment cpus with s390x-specific dedicated/shared counts
+        cpus = dict(host_info.get('cpus', {}))
+        cpus['dedicated'] = sysinfo_data.get('cpus_dedicated', 0)
+        cpus['shared'] = sysinfo_data.get('cpus_shared', 0)
+        ext['cpus'] = cpus
 
-        return host_info
+        # CPU model from /proc/sysinfo (manufacturer/type/model)
+        ext['cpu_model'] = sysinfo.detect_cpu_model()
 
-    def _get_s390x_sysinfo(self):
-        """
-        This method retrieves following system information
-        for s390 architecture
-        * manufacturer: Manufacturer of host machine
-        * type: Type of the host machine
-        * model:Model of host machine
-        * LPAR_NUMBER: LPAR Number of host
-        * LPAR_NAME: Name of host LPAR
-        * CPUS_DEDICATED: LPAR CPUs Dedicated
-        * CPUS_SHARED: LPAR CPUs Shared
+        # Virtualization / LPAR details
+        hyp = sysinfo.get_s390x_hypervisor_info(self.lscpu)
+        ext['virtualization'] = {
+            'hypervisor': hyp.get('hypervisor'),
+            'hypervisor_vendor': hyp.get('hypervisor_vendor'),
+            'lpar_name': sysinfo_data.get('lpar_name', ''),
+            'lpar_number': sysinfo_data.get('lpar_number', ''),
+        }
 
-        :param self: object of the class self
-        :return: dictionary with following keys -
-                 'manufacturer', 'type', 'model', CPUS_SHARED,
-                 CPUS_DEDICATED, LPAR_NUMBER, LPAR_NAME
-        """
-        s390x_sysinfo = {}
-        try:
-            with open(PROC_SYSINFO) as f:
-                for line in f:
-                    if ':' in line and (len(line.split(':')) == 2):
-                        info = line.split(':')
-                        if info[0] == 'Model' and (len(info[1].split()) == 2):
-                            s390x_sysinfo['model'] = \
-                                info[1].split()[0].strip() +\
-                                ' ' + info[1].split()[1].strip()
-                        elif info[0] == 'Manufacturer':
-                            s390x_sysinfo['manufacturer'] = info[1].strip()
-                        elif info[0] == 'Type':
-                            s390x_sysinfo['type'] = info[1].strip()
-                        elif info[0] == 'LPAR Number':
-                            s390x_sysinfo[LPAR_NUMBER] = int(info[1].strip())
-                        elif info[0] == 'LPAR Name':
-                            s390x_sysinfo[LPAR_NAME] = info[1].strip()
-                        elif info[0] == 'LPAR CPUs Dedicated':
-                            s390x_sysinfo[CPUS_DEDICATED] =\
-                                int(info[1].strip())
-                        elif info[0] == 'LPAR CPUs Shared':
-                            s390x_sysinfo[CPUS_SHARED] = int(info[1].strip())
-        except Exception as e:
-            wok_log.error('Failed to retrieve information from %s file. '
-                          'Error: %s', PROC_SYSINFO, e.__str__())
-
-        return s390x_sysinfo
+        return ext
 
     def _get_memory(self):
-        """
-        method to retrieve memory information for all architecture
-        :return: dictionary with keys "online" and "offline"
-        """
-        memory = {}
-        online_memory = 0
-        offline_memory = 0
-        if ARCH.startswith('s390x'):
-            online_mem_pat = r'^Total online memory :\s+(\d+)\s+MB$'
-            offline_mem_pat = r'^Total offline memory:\s+(\d+)\s+MB$'
-            out, err, rc = run_command(LSMEM)
-            # output of lsmem in s390x architecture is expected to be
-            # Address Range                          Size (MB)  State\
-            #     Removable  Device
-            # ========================================================\
-            # =======================
-            # 0x0000000000000000-0x000000000fffffff        256  online\
-            #    no         0
-            # 0x0000000010000000-0x000000002fffffff        512  online\
-            #    yes        1-2
-            # 0x0000000030000000-0x000000007fffffff       1280  online\
-            #    no         3-7
-            # 0x0000000080000000-0x00000000ffffffff       2048  offline\
-            #   -          8-15
-            #
-            # Memory device size  : 256 MB
-            # Memory block size   : 256 MB
-            # Total online memory : 2048 MB
-            # Total offline memory: 2048 MB
-            if not rc:
-                online_mem =\
-                    re.search(online_mem_pat, out.strip(), re.M | re.I)
-                offline_mem =\
-                    re.search(offline_mem_pat, out.strip(), re.M | re.I)
-                if online_mem and len(online_mem.groups()) == 1:
-                    online_memory = int(online_mem.group(1)) * 1024 * 1024
-                    # converting MB to bytes
-                    # lsmem always returns memory in MB
-                if offline_mem and len(offline_mem.groups()) == 1:
-                    offline_memory = int(offline_mem.group(1)) * 1024 * 1024
-            else:
-                wok_log.error('Failed to retrieve memory information with'
-                              ' command %s. Error: %s' % (LSMEM, err))
-        else:
-            if hasattr(psutil, 'phymem_usage'):
-                online_memory = psutil.phymem_usage().total
-            elif hasattr(psutil, 'virtual_memory'):
-                online_memory = psutil.virtual_memory().total
-
-        memory['online'] = online_memory
-        memory['offline'] = offline_memory
-        return memory
+        """Return memory info delegated to sysinfo compatibility layer."""
+        return sysinfo.get_memory_info()
 
     def _get_cpus(self):
-        """
-        method to retrieve online cpus count and offline cpus
-        count for all architecture
-        :return: dictionary with keys "online" and "offline"
-        """
-        cpus = {}
-        total_cpus = int(self.lscpu.get_total_cpus())
-
-        # psutil is unstable on how to get the number of
-        # cpus, different versions call it differently
-        online_cpus = 0
-
-        if hasattr(psutil, 'cpu_count'):
-            online_cpus = psutil.cpu_count()
-
-        elif hasattr(psutil, 'NUM_CPUS'):
-            online_cpus = psutil.NUM_CPUS
-
-        elif hasattr(psutil, '_psplatform'):
-            for method_name in ['_get_num_cpus', 'get_num_cpus']:
-
-                method = getattr(psutil._psplatform, method_name, None)
-                if method is not None:
-                    online_cpus = method()
-                    break
-
-        if online_cpus > 0:
-            offline_cpus = 0
-            if total_cpus > online_cpus:
-                offline_cpus = total_cpus - online_cpus
-        else:
-            online_cpus = 'unknown'
-            offline_cpus = 'unknown'
-
-        cpus['online'] = online_cpus
-        cpus['offline'] = offline_cpus
-        return cpus
+        """Return CPU counts delegated to sysinfo compatibility layer."""
+        return sysinfo.get_cpu_counts(self.lscpu)
 
     def _get_base_info(self):
-        """
-        method to retrieve common host information for all architectures
-        :return: dictionary with keys 'os_distro', 'os_version', 'os_codename'
-                 'architecture', 'host', memory
+        """Collect host information common to all architectures.
+
+        Architecture-specific branching and fallback logic are
+        handled inside the ``sysinfo`` compatibility layer.
         """
         common_info = {}
-        os_distro, version, codename = distro.linux_distribution(full_distribution_name=False)
+        os_distro, version, codename = distro.linux_distribution(
+            full_distribution_name=False)
         common_info['os_distro'] = os_distro
         common_info['os_version'] = version
         common_info['os_codename'] = codename
-        common_info['architecture'] = ARCH
+        common_info['architecture'] = sysinfo.get_arch_type()
         common_info['host'] = platform.node()
         common_info['memory'] = self._get_memory()
-        common_info['cpu_threads'] = {}
-        common_info['cpu_threads']['sockets'] = self.lscpu.get_sockets()
-        common_info['cpu_threads']['cores_per_socket'] = \
-            self.lscpu.get_cores_per_socket()
-        common_info['cpu_threads']['threads_per_core'] = \
-            self.lscpu.get_threads_per_core()
-        if ARCH.startswith('s390x'):
-            common_info['cpu_threads']['books'] = self.lscpu.get_books()
-
+        common_info['cpu_threads'] = sysinfo.get_cpu_thread_topology(
+            self.lscpu)
         return common_info
 
     def lookup(self, *name):
-        """
-        method to get basic information for host
-        """
+        """Assemble full host info: base + cpus + cpu_model + arch extensions."""
         host_info = self._get_base_info()
-        if ARCH.startswith('s390x'):
-            host_info.update(self._get_s390x_host_info())
-        elif ARCH.startswith('ppc'):
-            host_info['cpus'] = self._get_cpus()
-            host_info['cpu_model'] = self._get_ppc_cpu_model()
-        else:
-            host_info['cpus'] = self._get_cpus()
-            host_info['cpu_model'] = self._get_x86_cpu_model()
+        host_info['cpus'] = self._get_cpus()
+        host_info['cpu_model'] = sysinfo.detect_cpu_model()
+
+        if sysinfo.IS_S390X:
+            host_info.update(self._get_s390x_extensions(host_info))
+
         return host_info
 
     def swupdate(self, *name):
@@ -486,18 +284,15 @@ class HostStatsModel(object):
         prev_recv_bytes = net_recv_bytes[-1] if net_recv_bytes else 0
         prev_sent_bytes = net_sent_bytes[-1] if net_sent_bytes else 0
 
-        net_ios = None
-        if hasattr(psutil, 'net_io_counters'):
-            net_ios = psutil.net_io_counters(True)
-        elif hasattr(psutil, 'network_io_counters'):
-            net_ios = psutil.network_io_counters(True)
+        net_ios = sysinfo.get_net_io_counters(True)
 
         recv_bytes = 0
         sent_bytes = 0
-        for key in set(self.nics() +
-                       self.wlans()) & set(net_ios.keys()):
-            recv_bytes = recv_bytes + net_ios[key].bytes_recv
-            sent_bytes = sent_bytes + net_ios[key].bytes_sent
+        if net_ios is not None:
+            for key in set(self.nics() +
+                           self.wlans()) & set(net_ios.keys()):
+                recv_bytes = recv_bytes + net_ios[key].bytes_recv
+                sent_bytes = sent_bytes + net_ios[key].bytes_sent
 
         rx_rate = int(float(recv_bytes - prev_recv_bytes) / seconds + 0.5)
         tx_rate = int(float(sent_bytes - prev_sent_bytes) / seconds + 0.5)
@@ -508,14 +303,11 @@ class HostStatsModel(object):
         self.host_stats['net_sent_bytes'].append(sent_bytes)
 
     def wlans(self):
-        WLAN_PATH = '/sys/class/net/*/wireless'
-        return [b.split('/')[-2] for b in glob.glob(WLAN_PATH)]
+        return sysinfo.discover_wlans()
 
     # FIXME if we do not want to list usb nic
     def nics(self):
-        NIC_PATH = '/sys/class/net/*/device'
-        return list(set([b.split('/')[-2] for b in glob.glob(NIC_PATH)]) -
-                    set(self.wlans()))
+        return sysinfo.discover_nics()
 
 
 class HostStatsHistoryModel(object):
@@ -564,9 +356,13 @@ class CapabilitiesModel(object):
         return bool(DebugReportsModel.get_system_report_tool())
 
     def has_smt(self):
-        if ARCH.startswith('s390x') and SmtModel().check_smt_support():
-            return True
-        else:
+        if not sysinfo.IS_S390X:
+            return False
+        try:
+            return bool(SmtModel().check_smt_support())
+        except Exception as e:
+            wok_log.warning(
+                'SMT support check failed: %s', e)
             return False
 
     def lookup(self, *ident):

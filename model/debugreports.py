@@ -32,8 +32,18 @@ from wok.exception import OperationFailed
 from wok.exception import WokException
 from wok.model.tasks import TaskModel
 from wok.plugins.gingerbase import config
+from wok.plugins.gingerbase.config import debugreportLock
 from wok.utils import run_command
 from wok.utils import wok_log
+
+
+def _resolve_report_file(name):
+    path = config.get_debugreports_path()
+    file_pattern = os.path.join(path, name + '.*')
+    matches = glob.glob(file_pattern)
+    if not matches:
+        raise NotFoundError('GGBDR0001E', {'name': name})
+    return matches[0]
 
 
 class DebugReportsModel(object):
@@ -43,14 +53,24 @@ class DebugReportsModel(object):
 
     def create(self, params):
         ident = params.get('name').strip()
-        # Generate a name with time and millisec precision, if necessary
         if ident is None or ident == '':
-            ident = 'report-' + str(int(time.time() * 1000))
-        else:
+            ident = self._generate_unique_name()
+
+        with debugreportLock:
             if ident in self.get_list():
                 raise InvalidParameter('GGBDR0008E', {'name': ident})
-        taskid = self._gen_debugreport_file(ident)
+            taskid = self._gen_debugreport_file(ident)
         return self.task.lookup(taskid)
+
+    def _generate_unique_name(self):
+        existing = self.get_list()
+        base = 'report-' + str(int(time.time() * 1000))
+        candidate = base
+        suffix = 1
+        while candidate in existing:
+            candidate = base + '-' + str(suffix)
+            suffix += 1
+        return candidate
 
     def get_list(self):
         path = config.get_debugreports_path()
@@ -75,6 +95,10 @@ class DebugReportsModel(object):
         def log_error(e):
             wok_log = logging.getLogger('Model')
             wok_log.warning('Exception in generating debug file: %s', e)
+
+        sosreport_file = None
+        dbginfo_reportfile = None
+        final_tar_report_name = None
 
         try:
             # Sosreport generation
@@ -124,6 +148,7 @@ class DebugReportsModel(object):
                   (final_tar_report_name, dbg_target)
             wok_log.info(msg)
             shutil.move(final_tar_report_name, dbg_target)
+            final_tar_report_name = None  # consumed
             # Deleting the sosreport md5 file
             delete_the_sosreport_md5_file(md5_report_file)
             # Deleting the dbginfo report file
@@ -131,10 +156,12 @@ class DebugReportsModel(object):
                   % dbginfo_reportfile
             wok_log.info(msg)
             os.remove(dbginfo_reportfile)
+            dbginfo_reportfile = None  # consumed
             # Deleting the sosreport file
             msg = 'Deleting the sosreport file "%s" ' % sosreport_file
             wok_log.info(msg)
             os.remove(sosreport_file)
+            sosreport_file = None  # consumed
             wok_log.info('The debug report file has been moved')
             cb('OK', True)
             return
@@ -154,11 +181,29 @@ class DebugReportsModel(object):
             log_error(e)
             raise OperationFailed('GGBDR0011E', {'name': name, 'err': e})
 
+        finally:
+            # Clean up any temp files remaining after failure
+            for temp_file in (sosreport_file, dbginfo_reportfile,
+                              final_tar_report_name):
+                if temp_file and os.path.isfile(temp_file):
+                    try:
+                        os.remove(temp_file)
+                        wok_log.info('Cleaned up temp file: %s', temp_file)
+                    except OSError:
+                        pass
+            if sosreport_file and os.path.isfile(sosreport_file + '.md5'):
+                try:
+                    os.remove(sosreport_file + '.md5')
+                except OSError:
+                    pass
+
     @staticmethod
     def sosreport_generate(cb, name):
         def log_error(e):
             wok_log = logging.getLogger('Model')
             wok_log.warning('Exception in generating debug file: %s', e)
+
+        sosreport_file = None
         try:
             # Sosreport collection
             sosreport_file = sosreport_collection(name)
@@ -172,6 +217,7 @@ class DebugReportsModel(object):
             wok_log.info(msg)
             shutil.move(sosreport_file, sosreport_target)
             delete_the_sosreport_md5_file(md5_report_file)
+            sosreport_file = None  # consumed
             cb('OK', True)
             return
 
@@ -189,6 +235,18 @@ class DebugReportsModel(object):
             # and update the task status there
             log_error(e)
             raise OperationFailed('GGBDR0005E', {'name': name, 'err': e})
+
+        finally:
+            if sosreport_file is not None:
+                for cleanup_path in (sosreport_file,
+                                     sosreport_file + '.md5'):
+                    if os.path.isfile(cleanup_path):
+                        try:
+                            os.remove(cleanup_path)
+                            wok_log.info('Cleaned up temp file: %s',
+                                         cleanup_path)
+                        except OSError:
+                            pass
 
     @staticmethod
     def get_system_report_tool():
@@ -219,13 +277,7 @@ class DebugReportModel(object):
         pass
 
     def lookup(self, name):
-        path = config.get_debugreports_path()
-        file_pattern = os.path.join(path, name)
-        file_pattern = file_pattern + '.*'
-        try:
-            file_target = glob.glob(file_pattern)[0]
-        except IndexError:
-            raise NotFoundError('GGBDR0001E', {'name': name})
+        file_target = _resolve_report_file(name)
 
         ctime = os.stat(file_target).st_mtime
         ctime = time.strftime('%Y-%m-%d-%H:%M:%S', time.localtime(ctime))
@@ -236,31 +288,23 @@ class DebugReportModel(object):
                 'ctime': ctime}
 
     def update(self, name, params):
-        path = config.get_debugreports_path()
-        file_pattern = os.path.join(path, name + '.*')
-        try:
-            file_source = glob.glob(file_pattern)[0]
-        except IndexError:
-            raise NotFoundError('GGBDR0001E', {'name': name})
-
-        f_name = os.path.basename(file_source).replace(name, params['name'], 1)
-        file_target = os.path.join(path, f_name)
-        if os.path.isfile(file_target):
-            raise InvalidParameter('GGBDR0008E', {'name': params['name']})
-
-        shutil.move(file_source, file_target)
-        wok_log.info('%s renamed to %s' % (file_source, file_target))
+        with debugreportLock:
+            file_source = _resolve_report_file(name)
+            path = config.get_debugreports_path()
+            f_name = os.path.basename(file_source).replace(
+                name, params['name'], 1)
+            file_target = os.path.join(path, f_name)
+            if os.path.isfile(file_target):
+                raise InvalidParameter('GGBDR0008E',
+                                       {'name': params['name']})
+            shutil.move(file_source, file_target)
+            wok_log.info('%s renamed to %s' % (file_source, file_target))
         return params['name']
 
     def delete(self, name):
-        path = config.get_debugreports_path()
-        file_pattern = os.path.join(path, name + '.*')
-        try:
-            file_target = glob.glob(file_pattern)[0]
-        except IndexError:
-            raise NotFoundError('GGBDR0001E', {'name': name})
-
-        os.remove(file_target)
+        with debugreportLock:
+            file_target = _resolve_report_file(name)
+            os.remove(file_target)
 
 
 class DebugReportContentModel(object):

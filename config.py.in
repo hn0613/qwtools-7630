@@ -25,6 +25,7 @@ from wok.config import PluginConfig, PluginPaths
 from wok.utils import load_plugin_conf
 
 gingerBaseLock = threading.Lock()
+debugreportLock = threading.Lock()
 
 
 def get_debugreports_path():

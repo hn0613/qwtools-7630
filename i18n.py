@@ -34,14 +34,14 @@ messages = {
     'GGBDR0004E': _('Can not find any sosreport with the given name %(name)s with %(retcode)s.'),
     'GGBDR0005E': _('Unable to generate debug report %(name)s. Details: %(err)s'),
     'GGBDR0006E': _('You should give a name for the debug report file.'),
-    'GGBDR0007E': _("Debug report name must be a string. Only letters, digits, underscore ('_') and "
+    'GGBDR0007E': _("Debug report name must be a string. Only letters, digits and "
                     "hyphen ('-') are allowed."),
     'GGBDR0008E': _("The debug report with specified name '%(name)s' already exists. Please use another one."),
     'GGBDR0009E': _('Unable to create dbginfo report with %(retcode)s. Details: %(err)s'),
     'GGBDR0010E': _('Unable to compress the final debug report tar file with %(retcode)s. Details: %(error)s'),
     'GGBDR0011E': _('Unable to generate final debug report %(name)s. Details: %(err)s'),
     'GGBDR0012E': _('Can not find any dbginforeport with the %(retcode)s. Details: %(err)s'),
-    'GGBDR0013E': _("Debug report name must be a non-empty string. Only letters, digits, underscore ('_') and "
+    'GGBDR0013E': _("Debug report name must be a non-empty string. Only letters, digits and "
                     "hyphen ('-') are allowed."),
     'GGBHOST0001E': _('Unable to shutdown host machine as there are running virtual machines'),
     'GGBHOST0002E': _('Unable to reboot host machine as there are running virtual machines'),

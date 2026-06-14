@@ -26,9 +26,10 @@ import unittest
 from functools import partial
 
 import cherrypy
+import distro
 import mock
-import psutil
 from mock import patch
+from wok.plugins.gingerbase.compat import get_total_phymem
 from wok.plugins.gingerbase.model.host import HostModel
 
 from tests.utils import patch_auth
@@ -59,27 +60,40 @@ class HostTests(unittest.TestCase):
     def test_hostinfo(self):
         resp = self.request('/plugins/gingerbase/host').read()
         info = json.loads(resp)
-        if platform.machine().startswith('s390x'):
-            keys = ['os_distro', 'os_version', 'os_codename', 'cpu_model',
-                    'memory', 'cpus', 'architecture', 'host', 'virtualization',
-                    'cpu_threads']
-        else:
-            keys = ['os_distro', 'os_version', 'os_codename', 'cpu_model',
-                    'memory', 'cpus', 'architecture', 'host',
-                    'cpu_threads']
-            try:
-                total_phymem = psutil.TOTAL_PHYMEM
-            except AttributeError:
-                total_phymem = psutil.virtual_memory().total
-            self.assertEquals(total_phymem, info['memory']['online'])
-        self.assertEquals(sorted(keys), sorted(info.keys()))
+        # All architectures now return a stable set of keys
+        keys = ['os_distro', 'os_version', 'os_codename', 'cpu_model',
+                'memory', 'cpus', 'architecture', 'host', 'virtualization',
+                'cpu_threads']
+        if not platform.machine().startswith('s390x'):
+            total_phymem = get_total_phymem()
+            if total_phymem is not None:
+                self.assertEqual(total_phymem, info['memory']['online'])
+        self.assertEqual(sorted(keys), sorted(info.keys()))
 
-        distro, version, codename = platform.linux_distribution()
-        self.assertEquals(distro, info['os_distro'])
-        self.assertEquals(version, info['os_version'])
-        self.assertEquals(codename, info['os_codename'])
+        distro_info = distro.linux_distribution(full_distribution_name=False)
+        self.assertEqual(distro_info[0], info['os_distro'])
+        self.assertEqual(distro_info[1], info['os_version'])
+        self.assertEqual(distro_info[2], info['os_codename'])
         self.assertEqual(platform.node(), info['host'])
         self.assertEqual(platform.machine(), info['architecture'])
+
+        # Verify stable cpus structure
+        self.assertIn('online', info['cpus'])
+        self.assertIn('offline', info['cpus'])
+        self.assertIn('dedicated', info['cpus'])
+        self.assertIn('shared', info['cpus'])
+        # cpus values must always be integers, never 'unknown'
+        self.assertIsInstance(info['cpus']['online'], int)
+        self.assertIsInstance(info['cpus']['offline'], int)
+
+        # Verify stable cpu_threads structure
+        self.assertIn('books', info['cpu_threads'])
+
+        # Verify virtualization key semantics
+        if platform.machine().startswith('s390x'):
+            self.assertIsInstance(info['virtualization'], dict)
+        else:
+            self.assertIsNone(info['virtualization'])
 
     def test_hoststats(self):
         time.sleep(1)
@@ -216,3 +230,64 @@ class HostTests(unittest.TestCase):
             self.assertEqual(vms, [])
             cmd = ['systemctl', 'is-active', 'libvirtd', '--quiet']
             mock_run_cmd.assert_called_once_with(cmd, silent=True)
+
+
+class TestHostDegradation(unittest.TestCase):
+    """Test graceful degradation when system info is partially unavailable."""
+
+    @mock.patch('wok.plugins.gingerbase.model.host.get_online_cpus',
+                return_value=None)
+    @mock.patch('wok.plugins.gingerbase.model.host.LsCpu')
+    def test_cpus_fallback_when_psutil_unavailable(self, mock_lscpu_cls,
+                                                    mock_cpus):
+        """_get_cpus returns integers (not 'unknown') when psutil fails."""
+        mock_lscpu = mock.MagicMock()
+        mock_lscpu.get_total_cpus.return_value = 4
+        mock_lscpu_cls.return_value = mock_lscpu
+
+        host = HostModel(objstore=None)
+        host.lscpu = mock_lscpu
+        cpus = host._get_cpus()
+
+        self.assertIsInstance(cpus['online'], int)
+        self.assertIsInstance(cpus['offline'], int)
+        # When psutil is unavailable, fallback to total_cpus from lscpu
+        self.assertEqual(cpus['online'], 4)
+        self.assertEqual(cpus['offline'], 0)
+
+    @mock.patch('wok.plugins.gingerbase.model.host.get_net_io_counters',
+                return_value=None)
+    def test_network_io_handles_none_gracefully(self, _mock_net_io):
+        """No crash when net_io_counters is unavailable."""
+        from collections import defaultdict
+        from wok.plugins.gingerbase.model.host import HostStatsModel
+
+        stats_model = HostStatsModel.__new__(HostStatsModel)
+        stats_model.host_stats = defaultdict(list)
+        stats_model.host_stats['net_recv_bytes'] = [100]
+        stats_model.host_stats['net_sent_bytes'] = [200]
+
+        # Should not raise - gracefully appends 0
+        stats_model._get_host_network_io_rate(1.0)
+
+        self.assertEqual(stats_model.host_stats['net_recv_rate'], [0])
+        self.assertEqual(stats_model.host_stats['net_sent_rate'], [0])
+
+    @mock.patch('wok.plugins.gingerbase.model.host.get_total_phymem',
+                return_value=None)
+    @mock.patch('wok.plugins.gingerbase.model.host.is_s390x',
+                return_value=False)
+    @mock.patch('wok.plugins.gingerbase.model.host.LsCpu')
+    def test_memory_fallback_when_psutil_unavailable(self, mock_lscpu_cls,
+                                                      _mock_arch,
+                                                      _mock_phymem):
+        """_get_memory returns zeros when psutil cannot determine memory."""
+        mock_lscpu = mock.MagicMock()
+        mock_lscpu_cls.return_value = mock_lscpu
+
+        host = HostModel(objstore=None)
+        host.lscpu = mock_lscpu
+        memory = host._get_memory()
+
+        self.assertEqual(memory['online'], 0)
+        self.assertEqual(memory['offline'], 0)

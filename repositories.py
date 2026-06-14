@@ -30,6 +30,7 @@ from wok.exception import InvalidParameter
 from wok.exception import MissingParameter
 from wok.exception import NotFoundError
 from wok.exception import OperationFailed
+from wok.plugins.gingerbase.compat import probe_repo_manager
 from wok.plugins.gingerbase.config import gingerBaseLock
 from wok.plugins.gingerbase.utils import validate_repo_url
 from wok.plugins.gingerbase.yumparser import get_display_name
@@ -46,19 +47,16 @@ class Repositories(object):
     """
 
     def __init__(self):
-        try:
-            __import__('dnf')
+        probe = probe_repo_manager()
+        if not probe.available:
+            raise InvalidOperation('GGBREPOS0014E')
+
+        if probe.tool == 'yum':
             self._pkg_mnger = YumRepo()
-        except ImportError:
-            try:
-                __import__('yum')
-                self._pkg_mnger = YumRepo()
-            except ImportError:
-                try:
-                    __import__('apt_pkg')
-                    self._pkg_mnger = AptRepo()
-                except ImportError:
-                    raise InvalidOperation('GGBREPOS0014E')
+        elif probe.tool == 'deb':
+            self._pkg_mnger = AptRepo()
+        else:
+            raise InvalidOperation('GGBREPOS0014E')
 
     def addRepository(self, params):
         """

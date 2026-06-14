@@ -63,11 +63,15 @@ class SoftwareUpdate(object):
                 break
             except ImportError:
                 continue
-        zypper_help = ['zypper', '--help']
-        (stdout, stderr, returncode) = run_command(zypper_help)
-        if returncode == 0:
-            wok_log.info('Loading ZypperUpdate features.')
-            self._pkg_mnger = ZypperUpdate()
+
+        # Only check zypper if no Python-importable manager was found
+        if self._pkg_mnger is None:
+            zypper_help = ['zypper', '--help']
+            (stdout, stderr, returncode) = run_command(zypper_help)
+            if returncode == 0:
+                wok_log.info('Loading ZypperUpdate features.')
+                self._pkg_mnger = ZypperUpdate()
+
         if self._pkg_mnger is None:
             raise Exception('There is no compatible package '
                             'manager for this system.')

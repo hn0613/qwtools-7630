@@ -17,12 +17,10 @@
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301 USA
 import logging
-import platform
 import subprocess
 
 from wok.exception import NotFoundError
-
-ARCH = platform.machine()
+from wok.plugins.gingerbase.compat import is_s390x
 
 
 class LsCpu(object):
@@ -123,7 +121,7 @@ class LsCpu(object):
         """
         try:
             sockets = 'Socket(s)'
-            if ARCH.startswith('s390x'):
+            if is_s390x():
                 sockets = 'Socket(s) per book'
             if len(self.lsCpuInfo) > 0 and sockets in self.lsCpuInfo.keys():
                 return int(self.lsCpuInfo[sockets])

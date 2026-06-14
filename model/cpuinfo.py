@@ -18,15 +18,12 @@
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301 USA
-import platform
-
 from wok.exception import InvalidOperation
 from wok.exception import InvalidParameter
+from wok.plugins.gingerbase.compat import is_ppc
+from wok.plugins.gingerbase.compat import is_s390x
 from wok.plugins.gingerbase.lscpu import LsCpu
 from wok.utils import run_command
-
-
-ARCH = 'power' if platform.machine().startswith('ppc') else 'x86'
 
 
 class CPUInfoModel(object):
@@ -45,7 +42,7 @@ class CPUInfoModel(object):
         self.max_threads = 0
         self.lscpu = LsCpu()
 
-        if ARCH == 'power':
+        if is_ppc():
             # IBM PowerPC
             self.guest_threads_enabled = True
             out, error, rc = run_command(['ppc64_cpu', '--smt'])
@@ -66,6 +63,14 @@ class CPUInfoModel(object):
             if self.sockets == 0:
                 self.sockets = 1
             self.cores_per_socket = self.cores_present / self.sockets
+        elif is_s390x():
+            # IBM System Z
+            self.guest_threads_enabled = False
+            self.sockets = int(self.lscpu.get_sockets())
+            self.cores_per_socket = int(self.lscpu.get_cores_per_socket())
+            self.cores_present = self.cores_per_socket * self.sockets
+            self.cores_available = self.cores_present
+            self.threads_per_core = self.lscpu.get_threads_per_core()
         else:
             # Intel or AMD
             self.guest_threads_enabled = True

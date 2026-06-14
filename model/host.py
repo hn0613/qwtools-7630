@@ -33,6 +33,13 @@ from wok.basemodel import Singleton
 from wok.exception import InvalidOperation
 from wok.exception import OperationFailed
 from wok.model.tasks import TaskModel
+from wok.plugins.gingerbase.compat import ARCH_RAW
+from wok.plugins.gingerbase.compat import get_net_io_counters
+from wok.plugins.gingerbase.compat import get_online_cpus
+from wok.plugins.gingerbase.compat import get_total_phymem
+from wok.plugins.gingerbase.compat import is_ppc
+from wok.plugins.gingerbase.compat import is_s390x
+from wok.plugins.gingerbase.compat import probe_smt
 from wok.plugins.gingerbase.config import config
 from wok.plugins.gingerbase.i18n import messages
 from wok.plugins.gingerbase.lscpu import LsCpu
@@ -53,7 +60,6 @@ DOM_STATE_MAP = {0: 'nostate',
                  6: 'crashed',
                  7: 'pmsuspended'}
 
-ARCH = platform.machine()
 PROC_CPUINFO = '/proc/cpuinfo'
 PROC_SYSINFO = '/proc/sysinfo'
 LSMEM = 'lsmem'
@@ -74,29 +80,35 @@ class HostModel(object):
         """
         method to get cpu_model for ppc architecture
         """
-        res = {}
-        with open(PROC_CPUINFO) as f:
-            for line in f:
-                # Parse CPU, CPU's revision and CPU's clock information
-                for key in ['cpu', 'revision', 'clock']:
-                    if key in line:
-                        info = line.split(':')[1].strip()
-                        if key == 'clock':
-                            value = float(info.split('MHz')[0].strip()) / 1000
-                        else:
-                            value = info.split('(')[0].strip()
-                        res[key] = value
+        try:
+            res = {}
+            with open(PROC_CPUINFO) as f:
+                for line in f:
+                    # Parse CPU, CPU's revision and CPU's clock information
+                    for key in ['cpu', 'revision', 'clock']:
+                        if key in line:
+                            info = line.split(':')[1].strip()
+                            if key == 'clock':
+                                value = float(
+                                    info.split('MHz')[0].strip()) / 1000
+                            else:
+                                value = info.split('(')[0].strip()
+                            res[key] = value
 
-                        # Power machines show, for each cpu/core, a block with
-                        # all cpu information. Here we control the scan of the
-                        # necessary information (1st block provides
-                        # everything), skipping the function when find all
-                        # information.
-                        if len(res.keys()) == 3:
-                            return '%(cpu)s (%(revision)s) @ %(clock)s GHz\
+                            # Power machines show, for each cpu/core, a block
+                            # with all cpu information. Here we control the
+                            # scan of the necessary information (1st block
+                            # provides everything), skipping the function when
+                            # find all information.
+                            if len(res.keys()) == 3:
+                                return '%(cpu)s (%(revision)s) @ %(clock)s GHz\
                                     ' % res
 
-        return ''
+            return ''
+        except Exception as e:
+            wok_log.error('Failed to retrieve cpu_model for '
+                          '%s. Error: %s', ARCH_RAW, str(e))
+            return ''
 
     def _get_x86_cpu_model(self):
         """
@@ -110,7 +122,7 @@ class HostModel(object):
                         break
         except Exception as e:
             wok_log.error('Failed to retrive cpu_model for '
-                          '%s. Error: %s', ARCH, e.__str__())
+                          '%s. Error: %s', ARCH_RAW, e.__str__())
         return ''
 
     def _get_s390x_host_info(self):
@@ -206,28 +218,10 @@ class HostModel(object):
         memory = {}
         online_memory = 0
         offline_memory = 0
-        if ARCH.startswith('s390x'):
+        if is_s390x():
             online_mem_pat = r'^Total online memory :\s+(\d+)\s+MB$'
             offline_mem_pat = r'^Total offline memory:\s+(\d+)\s+MB$'
             out, err, rc = run_command(LSMEM)
-            # output of lsmem in s390x architecture is expected to be
-            # Address Range                          Size (MB)  State\
-            #     Removable  Device
-            # ========================================================\
-            # =======================
-            # 0x0000000000000000-0x000000000fffffff        256  online\
-            #    no         0
-            # 0x0000000010000000-0x000000002fffffff        512  online\
-            #    yes        1-2
-            # 0x0000000030000000-0x000000007fffffff       1280  online\
-            #    no         3-7
-            # 0x0000000080000000-0x00000000ffffffff       2048  offline\
-            #   -          8-15
-            #
-            # Memory device size  : 256 MB
-            # Memory block size   : 256 MB
-            # Total online memory : 2048 MB
-            # Total offline memory: 2048 MB
             if not rc:
                 online_mem =\
                     re.search(online_mem_pat, out.strip(), re.M | re.I)
@@ -235,18 +229,17 @@ class HostModel(object):
                     re.search(offline_mem_pat, out.strip(), re.M | re.I)
                 if online_mem and len(online_mem.groups()) == 1:
                     online_memory = int(online_mem.group(1)) * 1024 * 1024
-                    # converting MB to bytes
-                    # lsmem always returns memory in MB
                 if offline_mem and len(offline_mem.groups()) == 1:
                     offline_memory = int(offline_mem.group(1)) * 1024 * 1024
             else:
-                wok_log.error('Failed to retrieve memory information with'
-                              ' command %s. Error: %s' % (LSMEM, err))
+                wok_log.warning('Failed to retrieve memory information with'
+                                ' command %s. Error: %s' % (LSMEM, err))
         else:
-            if hasattr(psutil, 'phymem_usage'):
-                online_memory = psutil.phymem_usage().total
-            elif hasattr(psutil, 'virtual_memory'):
-                online_memory = psutil.virtual_memory().total
+            phymem = get_total_phymem()
+            if phymem is not None:
+                online_memory = phymem
+            else:
+                wok_log.warning('Unable to determine physical memory size')
 
         memory['online'] = online_memory
         memory['offline'] = offline_memory
@@ -261,31 +254,14 @@ class HostModel(object):
         cpus = {}
         total_cpus = int(self.lscpu.get_total_cpus())
 
-        # psutil is unstable on how to get the number of
-        # cpus, different versions call it differently
-        online_cpus = 0
+        online_cpus = get_online_cpus()
 
-        if hasattr(psutil, 'cpu_count'):
-            online_cpus = psutil.cpu_count()
-
-        elif hasattr(psutil, 'NUM_CPUS'):
-            online_cpus = psutil.NUM_CPUS
-
-        elif hasattr(psutil, '_psplatform'):
-            for method_name in ['_get_num_cpus', 'get_num_cpus']:
-
-                method = getattr(psutil._psplatform, method_name, None)
-                if method is not None:
-                    online_cpus = method()
-                    break
-
-        if online_cpus > 0:
-            offline_cpus = 0
-            if total_cpus > online_cpus:
-                offline_cpus = total_cpus - online_cpus
+        if online_cpus is not None and online_cpus > 0:
+            offline_cpus = max(0, total_cpus - online_cpus)
         else:
-            online_cpus = 'unknown'
-            offline_cpus = 'unknown'
+            wok_log.warning('Unable to determine online CPU count via psutil')
+            online_cpus = total_cpus
+            offline_cpus = 0
 
         cpus['online'] = online_cpus
         cpus['offline'] = offline_cpus
@@ -302,7 +278,7 @@ class HostModel(object):
         common_info['os_distro'] = os_distro
         common_info['os_version'] = version
         common_info['os_codename'] = codename
-        common_info['architecture'] = ARCH
+        common_info['architecture'] = ARCH_RAW
         common_info['host'] = platform.node()
         common_info['memory'] = self._get_memory()
         common_info['cpu_threads'] = {}
@@ -311,8 +287,10 @@ class HostModel(object):
             self.lscpu.get_cores_per_socket()
         common_info['cpu_threads']['threads_per_core'] = \
             self.lscpu.get_threads_per_core()
-        if ARCH.startswith('s390x'):
+        if is_s390x():
             common_info['cpu_threads']['books'] = self.lscpu.get_books()
+        else:
+            common_info['cpu_threads']['books'] = None
 
         return common_info
 
@@ -321,13 +299,22 @@ class HostModel(object):
         method to get basic information for host
         """
         host_info = self._get_base_info()
-        if ARCH.startswith('s390x'):
-            host_info.update(self._get_s390x_host_info())
-        elif ARCH.startswith('ppc'):
-            host_info['cpus'] = self._get_cpus()
+
+        # Always populate cpus with consistent structure
+        host_info['cpus'] = self._get_cpus()
+        host_info['cpus']['dedicated'] = 0
+        host_info['cpus']['shared'] = 0
+        host_info['cpu_model'] = ''
+        host_info['virtualization'] = None
+
+        if is_s390x():
+            s390x_info = self._get_s390x_host_info()
+            host_info['cpus'] = s390x_info['cpus']
+            host_info['cpu_model'] = s390x_info['cpu_model']
+            host_info['virtualization'] = s390x_info['virtualization']
+        elif is_ppc():
             host_info['cpu_model'] = self._get_ppc_cpu_model()
         else:
-            host_info['cpus'] = self._get_cpus()
             host_info['cpu_model'] = self._get_x86_cpu_model()
         return host_info
 
@@ -486,11 +473,14 @@ class HostStatsModel(object):
         prev_recv_bytes = net_recv_bytes[-1] if net_recv_bytes else 0
         prev_sent_bytes = net_sent_bytes[-1] if net_sent_bytes else 0
 
-        net_ios = None
-        if hasattr(psutil, 'net_io_counters'):
-            net_ios = psutil.net_io_counters(True)
-        elif hasattr(psutil, 'network_io_counters'):
-            net_ios = psutil.network_io_counters(True)
+        net_ios = get_net_io_counters(per_nic=True)
+        if net_ios is None:
+            wok_log.warning('Unable to retrieve network I/O counters')
+            self.host_stats['net_recv_rate'].append(0)
+            self.host_stats['net_sent_rate'].append(0)
+            self.host_stats['net_recv_bytes'].append(prev_recv_bytes)
+            self.host_stats['net_sent_bytes'].append(prev_sent_bytes)
+            return
 
         recv_bytes = 0
         sent_bytes = 0
@@ -564,10 +554,10 @@ class CapabilitiesModel(object):
         return bool(DebugReportsModel.get_system_report_tool())
 
     def has_smt(self):
-        if ARCH.startswith('s390x') and SmtModel().check_smt_support():
-            return True
-        else:
+        smt_probe = probe_smt()
+        if not smt_probe.available:
             return False
+        return SmtModel().check_smt_support()
 
     def lookup(self, *ident):
         self.report_tool = self.has_report_tool()

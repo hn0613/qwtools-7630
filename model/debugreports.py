@@ -22,7 +22,6 @@ import glob
 import logging
 import os
 import shutil
-import subprocess
 import time
 
 from wok.asynctask import AsyncTask
@@ -32,6 +31,7 @@ from wok.exception import OperationFailed
 from wok.exception import WokException
 from wok.model.tasks import TaskModel
 from wok.plugins.gingerbase import config
+from wok.plugins.gingerbase.compat import probe_report_tool
 from wok.utils import run_command
 from wok.utils import wok_log
 
@@ -192,25 +192,16 @@ class DebugReportsModel(object):
 
     @staticmethod
     def get_system_report_tool():
-        # Please add new possible debug report command here
-        # and implement the report generating function
-        # based on the new report command
-        report_tools = ({'cmd': '/usr/sbin/dbginfo.sh --help',
-                         'fn': DebugReportsModel.debugreport_generate},
-                        {'cmd': 'sosreport --help',
-                         'fn': DebugReportsModel.sosreport_generate},)
-
-        # check if the command can be found by shell one by one
-        for helper_tool in report_tools:
-            try:
-                retcode = subprocess.call(helper_tool['cmd'], shell=True,
-                                          stdout=subprocess.PIPE,
-                                          stderr=subprocess.PIPE)
-                if retcode == 0:
-                    return helper_tool['fn']
-            except Exception as e:
-                wok_log.info('Exception running command: %s', e)
-
+        # Mapping from probe tool names to report generation functions.
+        # To add a new debug report tool, add the probe in compat.py
+        # and add the generation function mapping here.
+        tool_map = {
+            'dbginfo': DebugReportsModel.debugreport_generate,
+            'sosreport': DebugReportsModel.sosreport_generate,
+        }
+        probe = probe_report_tool()
+        if probe.available and probe.tool in tool_map:
+            return tool_map[probe.tool]
         return None
 
 

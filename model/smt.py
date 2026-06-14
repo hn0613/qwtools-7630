@@ -18,18 +18,17 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301 USA
 import fileinput
 import os
-import platform
 import re
 import shutil
 
 from wok.exception import InvalidOperation
 from wok.exception import InvalidParameter
 from wok.exception import OperationFailed
+from wok.plugins.gingerbase.compat import ARCH_RAW
+from wok.plugins.gingerbase.compat import is_s390x
 from wok.plugins.gingerbase.lscpu import LsCpu
 from wok.utils import run_command
 from wok.utils import wok_log
-
-ARCH = platform.machine()
 
 ZIPL = '/etc/zipl.conf'
 PARAMETERS = 'parameters='
@@ -46,10 +45,10 @@ class SmtModel(object):
         pass
 
     def lookup(self, name):
-        if ARCH.startswith('s390x'):
+        if is_s390x():
             return self.get_smt_status_s390x()
         else:
-            raise OperationFailed('GINSMT0013E', {'name': ARCH})
+            raise OperationFailed('GINSMT0013E', {'name': ARCH_RAW})
 
     def get_smt_status_s390x(self):
         """
@@ -161,7 +160,7 @@ class SmtModel(object):
         """
         Enables the SMT.
         """
-        if ARCH.startswith('s390x'):
+        if is_s390x():
             self.enable_smt_s390x(name, smt_val)
         else:
             raise InvalidOperation('GINSMT0007E', {'name': 'enable'})
@@ -170,7 +169,7 @@ class SmtModel(object):
         """
         Disables the SMT.
         """
-        if ARCH.startswith('s390x'):
+        if is_s390x():
             self.disable_smt_s390x(name)
         else:
             raise InvalidOperation('GINSMT0007E', {'name': 'disable'})

@@ -21,10 +21,10 @@
 import binascii
 import glob
 import os
-import platform
 import re
 
 from wok.exception import OperationFailed
+from wok.plugins.gingerbase.compat import is_s390x
 from wok.utils import run_command
 
 FC_PATHS = '/dev/disk/by-path/*fc*'
@@ -113,7 +113,7 @@ def get_dasd_devs():
     Get the list of unformatted DASD devices
     """
     devs = []
-    if platform.machine() == 's390x':
+    if is_s390x():
         dasd_pim_dict = _get_dasd_pim()
         dasd_devices = _get_lsdasd_devs()
         for device in dasd_devices:

@@ -81,6 +81,10 @@ class MockModel(Model):
         xml = "<topology sockets='1' cores='2' threads='2'/>"
         return ET.fromstring(xml)
 
+    # NOTE: The mock intentionally produces .txt files instead of the
+    # .tar.xz files that real sosreport / dbginfo generate.  The shared
+    # file-discovery helpers (_find_report_file, _get_all_report_names)
+    # work with any extension, so the integration tests remain valid.
     def _gen_debugreport_file(self, name):
         return AsyncTask('/plugins/gingerbase/debugreports/%s' % name,
                          self._create_log, name).id

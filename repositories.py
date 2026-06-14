@@ -107,6 +107,13 @@ class Repositories(object):
         The input is the repo_id of the repository to be updated and a dict
         with the information to be updated.
         """
+        config = params.get('config', {})
+        extra_keys = list(
+            set(config.keys()).difference(set(self._pkg_mnger.CONFIG_ENTRY)))
+        if len(extra_keys) > 0:
+            raise InvalidParameter('GGBREPOS0028E',
+                                   {'items': ','.join(extra_keys)})
+
         return self._pkg_mnger.updateRepo(repo_id, params)
 
     def removeRepository(self, repo_id):
@@ -124,7 +131,7 @@ class YumRepo(object):
     """
     TYPE = 'yum'
     DEFAULT_CONF_DIR = '/etc/yum.repos.d'
-    CONFIG_ENTRY = ('repo_name', 'mirrorlist', 'metalink')
+    CONFIG_ENTRY = ('repo_name', 'mirrorlist', 'metalink', 'gpgcheck', 'gpgkey')
 
     def __init__(self):
         self._confdir = self.DEFAULT_CONF_DIR
@@ -307,8 +314,10 @@ class YumRepo(object):
         entry.gpgcheck = config.get('gpgcheck', entry.gpgcheck)
         entry.gpgkey = config.get('gpgkey', entry.gpgkey)
         gingerBaseLock.acquire()
-        write_repo_to_file(entry)
-        gingerBaseLock.release()
+        try:
+            write_repo_to_file(entry)
+        finally:
+            gingerBaseLock.release()
         return repo_id
 
     def removeRepo(self, repo_id):
@@ -320,17 +329,21 @@ class YumRepo(object):
             raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
 
         entry = repos.get(repo_id)
-        parser = SafeConfigParser()
-        with open(entry.repofile) as fd:
-            parser.readfp(fd)
+        gingerBaseLock.acquire()
+        try:
+            parser = SafeConfigParser()
+            with open(entry.repofile) as fd:
+                parser.readfp(fd)
 
-        if len(parser.sections()) == 1:
-            os.remove(entry.repofile)
-            return
+            if len(parser.sections()) == 1:
+                os.remove(entry.repofile)
+                return
 
-        parser.remove_section(repo_id)
-        with open(entry.repofile, 'w') as fd:
-            parser.write(fd)
+            parser.remove_section(repo_id)
+            with open(entry.repofile, 'w') as fd:
+                parser.write(fd)
+        finally:
+            gingerBaseLock.release()
 
 
 class AptRepo(object):
@@ -368,10 +381,14 @@ class AptRepo(object):
 
         return repos
 
-    def _get_repo_id(self, repo):
-        data = urllib.parse.urlparse(repo.uri)
+    def _get_repo_id(self, repo=None, uri=None, dist=None, comps=None):
+        if repo is not None:
+            uri = repo.uri
+            dist = repo.dist
+            comps = repo.comps
+        data = urllib.parse.urlparse(uri)
         name = data.hostname or data.path
-        return '%s-%s-%s' % (name, repo.dist, '-'.join(repo.comps))
+        return '%s-%s-%s' % (name, dist, '-'.join(comps))
 
     def _get_source_entry(self, repo_id):
         gingerBaseLock.acquire()
@@ -448,11 +465,20 @@ class AptRepo(object):
         if 'dist' not in config.keys():
             raise MissingParameter('GGBREPOS0019E')
 
-        uri = params['baseurl']
+        uri = params.get('baseurl', None)
+        if uri is None:
+            raise MissingParameter('GGBREPOS0013E')
+
         dist = config['dist']
         comps = config.get('comps', [])
 
         validate_repo_url(get_expanded_url(uri))
+
+        # Check for duplicate repository
+        would_be_id = self._get_repo_id(uri=uri, dist=dist, comps=comps)
+        existing_ids = self.getRepositoriesList()
+        if would_be_id in existing_ids:
+            raise InvalidOperation('GGBREPOS0022E', {'repo_id': would_be_id})
 
         gingerBaseLock.acquire()
         try:
@@ -461,7 +487,7 @@ class AptRepo(object):
                                      file=self.filename)
             repos.save()
         except Exception as e:
-            raise OperationFailed('GGBREPOS0026E', {'err': e.message})
+            raise OperationFailed('GGBREPOS0026E', {'err': str(e)})
         finally:
             gingerBaseLock.release()
         return self._get_repo_id(source_entry)
@@ -506,6 +532,8 @@ class AptRepo(object):
         Update a given repository in repositories.Repositories() format
         """
         old_info = self.getRepo(repo_id)
+        was_enabled = old_info['enabled']
+
         updated_info = copy.deepcopy(old_info)
         updated_info['baseurl'] = params.get(
             'baseurl', updated_info['baseurl'])
@@ -519,10 +547,16 @@ class AptRepo(object):
 
         self.removeRepo(repo_id)
         try:
-            return self.addRepo(updated_info)
+            new_repo_id = self.addRepo(updated_info)
         except Exception:
             self.addRepo(old_info)
             raise
+
+        # Restore disabled state if repo was disabled before update
+        if not was_enabled:
+            self.toggleRepo(new_repo_id, False)
+
+        return new_repo_id
 
     def removeRepo(self, repo_id):
         """

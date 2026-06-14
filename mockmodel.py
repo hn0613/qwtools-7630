@@ -24,6 +24,10 @@ import time
 
 import lxml.etree as ET
 from wok.asynctask import AsyncTask
+from wok.exception import InvalidOperation
+from wok.exception import InvalidParameter
+from wok.exception import MissingParameter
+from wok.exception import NotFoundError
 from wok.objectstore import ObjectStore
 from wok.plugins.gingerbase import config
 from wok.plugins.gingerbase import swupdate
@@ -136,36 +140,90 @@ class MockModel(Model):
         # Create a repo_id if not given by user. The repo_id will follow
         # the format gingerbase_repo_<integer>, where integer is the number of
         # seconds since the Epoch (January 1st, 1970), in UTC.
+        VALID_CONFIG_KEYS = ('repo_name', 'mirrorlist', 'metalink',
+                             'gpgcheck', 'gpgkey', 'dist', 'comps')
+
+        config = params.get('config', {})
+        extra_keys = list(
+            set(config.keys()).difference(set(VALID_CONFIG_KEYS)))
+        if len(extra_keys) > 0:
+            raise InvalidParameter('GGBREPOS0028E',
+                                   {'items': ','.join(extra_keys)})
+
+        baseurl = params.get('baseurl', '')
+        if baseurl:
+            url_parts = baseurl.split('://')
+            if url_parts[0] == '' or \
+               url_parts[0] not in ['http', 'https', 'ftp', 'file']:
+                raise InvalidParameter('GGBREPOS0002E')
+
         repo_id = params.get('repo_id', None)
         if repo_id is None:
             repo_id = 'gingerbase_repo_%s' % str(int(time.time() * 1000))
             params.update({'repo_id': repo_id})
 
-        config = params.get('config', {})
+        if repo_id in self._mock_repositories.repos:
+            raise InvalidOperation('GGBREPOS0022E', {'repo_id': repo_id})
+
         info = {'repo_id': repo_id,
-                'baseurl': params['baseurl'],
+                'baseurl': baseurl,
                 'enabled': True,
                 'config': {'repo_name': config.get('repo_name', repo_id),
                            'gpgkey': config.get('gpgkey', []),
                            'gpgcheck': True,
-                           'mirrorlist': params.get('mirrorlist', '')}}
+                           'mirrorlist': config.get('mirrorlist', '')}}
         self._mock_repositories.repos[repo_id] = info
         return repo_id
 
     def _mock_repository_lookup(self, repo_id):
+        if repo_id not in self._mock_repositories.repos:
+            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
         return self._mock_repositories.repos[repo_id]
 
     def _mock_repository_delete(self, repo_id):
+        if repo_id not in self._mock_repositories.repos:
+            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
         del self._mock_repositories.repos[repo_id]
 
     def _mock_repository_enable(self, repo_id):
+        if repo_id not in self._mock_repositories.repos:
+            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
+        if self._mock_repositories.repos[repo_id]['enabled']:
+            raise InvalidOperation('GGBREPOS0015E', {'repo_id': repo_id})
         self._mock_repositories.repos[repo_id]['enabled'] = True
 
     def _mock_repository_disable(self, repo_id):
+        if repo_id not in self._mock_repositories.repos:
+            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
+        if not self._mock_repositories.repos[repo_id]['enabled']:
+            raise InvalidOperation('GGBREPOS0016E', {'repo_id': repo_id})
         self._mock_repositories.repos[repo_id]['enabled'] = False
 
     def _mock_repository_update(self, repo_id, params):
-        self._mock_repositories.repos[repo_id].update(params)
+        if repo_id not in self._mock_repositories.repos:
+            raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
+
+        VALID_CONFIG_KEYS = ('repo_name', 'mirrorlist', 'metalink',
+                             'gpgcheck', 'gpgkey', 'dist', 'comps')
+        config = params.get('config', {})
+        extra_keys = list(
+            set(config.keys()).difference(set(VALID_CONFIG_KEYS)))
+        if len(extra_keys) > 0:
+            raise InvalidParameter('GGBREPOS0028E',
+                                   {'items': ','.join(extra_keys)})
+
+        baseurl = params.get('baseurl', None)
+        if baseurl:
+            url_parts = baseurl.split('://')
+            if url_parts[0] == '' or \
+               url_parts[0] not in ['http', 'https', 'ftp', 'file']:
+                raise InvalidParameter('GGBREPOS0002E')
+
+        repo = self._mock_repositories.repos[repo_id]
+        if baseurl is not None:
+            repo['baseurl'] = baseurl
+        if config:
+            repo.setdefault('config', {}).update(config)
         return repo_id
 
 

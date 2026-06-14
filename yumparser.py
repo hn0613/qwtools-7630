@@ -26,11 +26,12 @@ from os.path import isfile
 from os.path import splitext
 
 from wok.utils import run_command
+from wok.utils import wok_log
 
 try:
     import rpm
 except ImportError:
-    pass
+    rpm = None
 
 
 class YumRepoObject(object):
@@ -220,13 +221,16 @@ def delete_repo_from_file(repo):
 
 
 def _get_releasever():
+    if rpm is None:
+        wok_log.warning('rpm module not available, cannot resolve $releasever')
+        return '%releasever'
     release_file = glob.glob('/etc/*-release')[0]
     transaction = rpm.TransactionSet()
     match_iter = transaction.dbMatch('basenames', release_file)
 
     ret = '%releasever'
     try:
-        ret = match_iter.next()['version']
+        ret = next(match_iter)['version']
 
     except StopIteration:
         pass
@@ -247,9 +251,8 @@ def _get_all_yum_vars():
         with open(varfile) as f:
             variables[basename(varfile)] = f.read().strip('\n')
 
-    map(lambda vfile:
-        _get_var_content(vfile),
-        glob.glob('/etc/yum/vars/*'))
+    for vfile in glob.glob('/etc/yum/vars/*'):
+        _get_var_content(vfile)
 
     return variables
 

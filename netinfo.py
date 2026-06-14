@@ -22,7 +22,7 @@
 """Network utilities module."""
 import glob
 import os
-from distutils.spawn import find_executable
+from shutil import which as find_executable
 
 import ethtool
 from wok.stringutils import encode_value

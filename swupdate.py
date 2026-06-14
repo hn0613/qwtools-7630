@@ -30,6 +30,7 @@ from configobj import ConfigObjError
 from psutil import pid_exists
 from psutil import process_iter
 from wok.basemodel import Singleton
+from wok.exception import InvalidOperation
 from wok.exception import NotFoundError
 from wok.exception import OperationFailed
 from wok.plugins.gingerbase import portageparser
@@ -43,8 +44,7 @@ from wok.utils import wok_log
 swupdateLock = threading.RLock()
 
 
-class SoftwareUpdate(object):
-    __metaclass__ = Singleton
+class SoftwareUpdate(object, metaclass=Singleton):
 
     """
     Class to represent and operate with OS software update.
@@ -63,67 +63,47 @@ class SoftwareUpdate(object):
                 break
             except ImportError:
                 continue
-        zypper_help = ['zypper', '--help']
-        (stdout, stderr, returncode) = run_command(zypper_help)
-        if returncode == 0:
-            wok_log.info('Loading ZypperUpdate features.')
-            self._pkg_mnger = ZypperUpdate()
         if self._pkg_mnger is None:
-            raise Exception('There is no compatible package '
-                            'manager for this system.')
+            zypper_help = ['zypper', '--help']
+            (stdout, stderr, returncode) = run_command(zypper_help)
+            if returncode == 0:
+                wok_log.info('Loading ZypperUpdate features.')
+                self._pkg_mnger = ZypperUpdate()
+        if self._pkg_mnger is None:
+            raise InvalidOperation('GGBPKGUPD0004E')
 
     def getUpdates(self):
         """
         Return a list of packages eligible to be updated in the system.
         """
-        swupdateLock.acquire()
-        try:
+        with swupdateLock:
             pkgs = [pkg for pkg in self._pkg_mnger.getPackagesList()]
             return pkgs
-        except Exception:
-            raise
-        finally:
-            swupdateLock.release()
 
     def getUpdate(self, name):
         """
         Return a dictionary with all info from a given package name.
         """
-        swupdateLock.acquire()
-        try:
+        with swupdateLock:
             package = self._pkg_mnger.getPackageInfo(name)
             if not package:
                 raise NotFoundError('GGBPKGUPD0002E', {'name': name})
             return package
-        except Exception:
-            raise
-        finally:
-            swupdateLock.release()
 
     def getPackageDeps(self, name):
         """
         """
         self.getUpdate(name)
 
-        swupdateLock.acquire()
-        try:
+        with swupdateLock:
             return self._pkg_mnger.getPackageDeps(name)
-        except Exception:
-            raise
-        finally:
-            swupdateLock.release()
 
     def getNumOfUpdates(self):
         """
         Return the number of packages to be updated.
         """
-        swupdateLock.acquire()
-        try:
+        with swupdateLock:
             return len(self.getUpdates())
-        except Exception:
-            raise
-        finally:
-            swupdateLock.release()
 
     def preUpdate(self):
         """
@@ -349,7 +329,8 @@ class DnfUpdate(YumUpdate):
                 if 'dnf' in dnf_proc.name():
                     pid = dnf_proc.pid
                     return pid_exists(pid)
-        except Exception:
+        except Exception as e:
+            wok_log.debug('Error checking if dnf is running: %s', str(e))
             return False
 
         return False
@@ -381,7 +362,7 @@ class AptUpdate(GenericUpdate):
             pkgs = self._apt_cache.get_changes()
             self._apt_cache.close()
         except Exception as e:
-            raise OperationFailed('GGBPKGUPD0003E', {'err': e.message})
+            raise OperationFailed('GGBPKGUPD0003E', {'err': str(e)})
 
         return [{'package_name': pkg.shortname,
                  'version': pkg.candidate.version,
@@ -408,7 +389,7 @@ class AptUpdate(GenericUpdate):
             pkgs = self._apt_cache.get_changes()
             self._apt_cache.close()
         except Exception as e:
-            raise OperationFailed('GGBPKGUPD0006E', {'err': e.message})
+            raise OperationFailed('GGBPKGUPD0006E', {'err': str(e)})
 
         pkg = next((x for x in pkgs if x.shortname == pkg_name), None)
         if not pkg:
@@ -430,7 +411,7 @@ class AptUpdate(GenericUpdate):
             pkgs = self._apt_cache.get_changes()
             self._apt_cache.close()
         except Exception as e:
-            raise OperationFailed('GGBPKGUPD0006E', {'err': e.message})
+            raise OperationFailed('GGBPKGUPD0006E', {'err': str(e)})
 
         pkg = next((x for x in pkgs if x.shortname == pkg_name), None)
         if not pkg:
@@ -480,7 +461,7 @@ class ZypperUpdate(GenericUpdate):
         cmd = ['zypper', 'list-updates']
         (stdout, stderr, returncode) = run_command(cmd)
 
-        if len(stderr) > 0:
+        if returncode != 0:
             raise OperationFailed('GGBPKGUPD0003E', {'err': stderr})
 
         for line in stdout.split('\n'):
@@ -508,7 +489,7 @@ class ZypperUpdate(GenericUpdate):
         cmd = ['zypper', 'info', pkg_name]
         (stdout, stderr, returncode) = run_command(cmd)
 
-        if len(stderr) > 0:
+        if returncode != 0:
             raise OperationFailed('GGBPKGUPD0006E', {'err': stderr})
 
         # Zypper returns returncode == 0 and stderr <= 0, even if package is
@@ -537,7 +518,7 @@ class ZypperUpdate(GenericUpdate):
         cmd = ['zypper', '--non-interactive', 'update', '--dry-run', pkg_name]
         (stdout, stderr, returncode) = run_command(cmd)
 
-        if len(stderr) > 0:
+        if returncode != 0:
             raise OperationFailed('GGBPKGUPD0006E', {'err': stderr})
 
         # Zypper returns returncode == 0 and stderr <= 0, even if package is
@@ -641,7 +622,8 @@ class PortageUpdate(GenericUpdate):
                 if 'emerge' in dnf_proc.name():
                     pid = dnf_proc.pid
                     return pid_exists(pid)
-        except Exception:
+        except Exception as e:
+            wok_log.debug('Error checking if emerge is running: %s', str(e))
             return False
 
         # the pidfile exists and it lives in process table

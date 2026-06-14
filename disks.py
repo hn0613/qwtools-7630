@@ -68,10 +68,7 @@ def _get_dev_major_min(name):
     maj_min = None
 
     keys = ['NAME', 'MAJ:MIN']
-    try:
-        dev_list = _get_lsblk_devs(keys)
-    except Exception:
-        raise
+    dev_list = _get_lsblk_devs(keys)
 
     for dev in dev_list:
         if dev['name'].split()[0] == name:
@@ -122,7 +119,7 @@ def _is_dev_extended_partition(devType, devNodePath):
         except Exception as e:
             wok_log.error(
                 'Error dealing with dev mapper device: ' + devNodePath)
-            raise OperationFailed('GGBDISK00001E', {'err': e.message})
+            raise OperationFailed('GGBDISK00001E', {'err': str(e)})
     else:
         diskPath = devNodePath.rstrip('0123456789')
 
@@ -132,7 +129,7 @@ def _is_dev_extended_partition(devType, devNodePath):
     except NotImplementedError as e:
         wok_log.warning(
             'Error getting extended partition info for dev %s type %s: %s',
-            devNodePath, devType, e.message)
+            devNodePath, devType, str(e))
         # Treate disk with unsupported partiton table as if it does not
         # contain extended partitions.
         return False
@@ -256,13 +253,13 @@ def vgs():
         return []
 
     # remove blank spaces and create a list of VGs
-    vgs = map(lambda v: v.strip(), out.strip('\n').split('\n'))
+    vgs = list(map(lambda v: v.strip(), out.strip('\n').split('\n')))
 
     # create a dict based on data retrieved from vgs
-    return map(lambda l: {'vgname': l[0],
+    return list(map(lambda l: {'vgname': l[0],
                           'size': int(l[1]),
                           'free': int(l[2])},
-               [fields.split() for fields in vgs])
+               [fields.split() for fields in vgs]))
 
 
 def fetch_disks_partitions():
@@ -318,10 +315,10 @@ def lvs(vgname=None):
                       map(lambda v: v.strip(), out.strip('\n').split('\n'))))
 
     # create a dict based on data retrieved from lvs
-    return map(lambda l: {'lvname': l[0],
+    return list(map(lambda l: {'lvname': l[0],
                           'path': l[1],
                           'size': int(l[2])},
-               [fields.split() for fields in lvs])
+               [fields.split() for fields in lvs]))
 
 
 def pvs(vgname=None):
@@ -358,10 +355,10 @@ def pvs(vgname=None):
                       map(lambda v: v.strip(), out.strip('\n').split('\n'))))
 
     # create a dict based on data retrieved from pvs
-    return map(lambda l: {'pvname': l[0],
+    return list(map(lambda l: {'pvname': l[0],
                           'size': int(l[1]),
                           'uuid': l[2]},
-               [fields.split() for fields in pvs])
+               [fields.split() for fields in pvs]))
 
 
 def pvs_with_vg_list():
@@ -371,7 +368,6 @@ def pvs_with_vg_list():
 
     """
     outlist = []
-    outdict = {}
     cmd = ['pvs',
            '--units',
            'b',
@@ -389,6 +385,7 @@ def pvs_with_vg_list():
         return []
     outlines = out.strip('\n').splitlines()
     for line in outlines:
+        outdict = {}
         columns = line.split()
         if len(columns) == 1:
             outdict[columns[0]] = 'N/A'

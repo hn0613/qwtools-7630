@@ -22,7 +22,7 @@ import copy
 import os
 import time
 import urllib.parse
-from configparser import SafeConfigParser
+from configparser import ConfigParser
 
 from wok.basemodel import Singleton
 from wok.exception import InvalidOperation
@@ -38,8 +38,7 @@ from wok.plugins.gingerbase.yumparser import get_yum_repositories
 from wok.plugins.gingerbase.yumparser import write_repo_to_file
 
 
-class Repositories(object):
-    __metaclass__ = Singleton
+class Repositories(object, metaclass=Singleton):
 
     """
     Class to represent and operate with repositories information.
@@ -213,7 +212,7 @@ class YumRepo(object):
                 'gpgkey': [], 'enabled': 1, 'metalink': metalink}
 
         # write a repo file in the system with repo{} information.
-        parser = SafeConfigParser()
+        parser = ConfigParser()
         parser.add_section(repo_id)
 
         for key, value in repo.items():
@@ -320,9 +319,9 @@ class YumRepo(object):
             raise NotFoundError('GGBREPOS0012E', {'repo_id': repo_id})
 
         entry = repos.get(repo_id)
-        parser = SafeConfigParser()
+        parser = ConfigParser()
         with open(entry.repofile) as fd:
-            parser.readfp(fd)
+            parser.read_file(fd)
 
         if len(parser.sections()) == 1:
             os.remove(entry.repofile)
@@ -364,7 +363,7 @@ class AptRepo(object):
         try:
             repos = self._sourceslist()
         except Exception as e:
-            raise OperationFailed('GGBREPOS0025E', {'err': e.message})
+            raise OperationFailed('GGBREPOS0025E', {'err': str(e)})
 
         return repos
 
@@ -461,7 +460,7 @@ class AptRepo(object):
                                      file=self.filename)
             repos.save()
         except Exception as e:
-            raise OperationFailed('GGBREPOS0026E', {'err': e.message})
+            raise OperationFailed('GGBREPOS0026E', {'err': str(e)})
         finally:
             gingerBaseLock.release()
         return self._get_repo_id(source_entry)

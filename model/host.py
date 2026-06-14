@@ -23,6 +23,7 @@ import glob
 import os
 import platform
 import re
+import subprocess
 import time
 from collections import defaultdict
 
@@ -271,14 +272,6 @@ class HostModel(object):
         elif hasattr(psutil, 'NUM_CPUS'):
             online_cpus = psutil.NUM_CPUS
 
-        elif hasattr(psutil, '_psplatform'):
-            for method_name in ['_get_num_cpus', 'get_num_cpus']:
-
-                method = getattr(psutil._psplatform, method_name, None)
-                if method is not None:
-                    online_cpus = method()
-                    break
-
         if online_cpus > 0:
             offline_cpus = 0
             if total_cpus > online_cpus:
@@ -354,7 +347,9 @@ class HostModel(object):
             raise OperationFailed('GGBHOST0001E')
 
         wok_log.info('Host is going to shutdown.')
-        os.system('shutdown -h now')
+        retcode = subprocess.call(['shutdown', '-h', 'now'])
+        if retcode != 0:
+            wok_log.warning('shutdown command returned non-zero: %s', retcode)
 
     def reboot(self, args=None):
         # Check for running vms before reboot
@@ -363,14 +358,16 @@ class HostModel(object):
             raise OperationFailed('GGBHOST0002E')
 
         wok_log.info('Host is going to reboot.')
-        os.system('reboot')
+        retcode = subprocess.call(['reboot'])
+        if retcode != 0:
+            wok_log.warning('reboot command returned non-zero: %s', retcode)
 
     def get_vmlist_bystate(self, state='running'):
         try:
             libvirt_mod = __import__('libvirt')
         except Exception as e:
-            wok_log.info('Unable to import libvirt module. Details:',
-                         e.message)
+            wok_log.info('Unable to import libvirt module. Details: %s',
+                         str(e))
             # Ignore any error and assume there is no vm running in the host
             return []
 
@@ -386,12 +383,11 @@ class HostModel(object):
                     if (DOM_STATE_MAP[dom.info()[0]] == state)]
         except Exception as e:
             wok_log.info('Unable to get virtual machines information. '
-                         'Details:', e.message)
+                         'Details: %s', str(e))
             raise OperationFailed('GGBHOST0003E')
 
 
-class HostStatsModel(object):
-    __metaclass__ = Singleton
+class HostStatsModel(object, metaclass=Singleton):
 
     def __init__(self, **kargs):
         self.host_stats = defaultdict(list)
@@ -535,8 +531,7 @@ class HostStatsHistoryModel(object):
                 'net_sent_rate': self.history.host_stats['net_sent_rate']}
 
 
-class CapabilitiesModel(object):
-    __metaclass__ = Singleton
+class CapabilitiesModel(object, metaclass=Singleton):
 
     def __init__(self, **kargs):
         wok_log.info('*** Ginger Base: Running capabilities tests ***')
